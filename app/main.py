@@ -217,16 +217,12 @@ async def upload_prefab_model_image(
     }
 
 
-@app.post("/api/prefab-models/{model_id}/image/fetch", tags=["simulacion"])
-def fetch_prefab_model_image(
-    model_id: str,
-    url: str | None = Query(None, description="URL alternativa; por defecto, la del catálogo"),
-) -> dict[str, Any]:
-    """Descarga la foto desde el anuncio de referencia del modelo.
+def _fetch_model_image(model_id: str, url: str | None = None) -> dict[str, Any]:
+    """Descarga y guarda la foto de un modelo desde su anuncio.
 
-    Lo hace el servidor, no el navegador: así la imagen queda guardada y
-    servida por la propia app. Enlazarla directamente daría fotos rotas,
-    porque las tiendas rechazan las peticiones que no vienen de su web.
+    Es una función normal y no una ruta porque la llaman dos endpoints: invocar
+    una ruta desde otra hace que los valores por defecto de FastAPI (Query,
+    File) lleguen como objetos en vez de como valores.
     """
     try:
         model = get_model(model_id)
@@ -263,6 +259,20 @@ def fetch_prefab_model_image(
     }
 
 
+@app.post("/api/prefab-models/{model_id}/image/fetch", tags=["simulacion"])
+def fetch_prefab_model_image(
+    model_id: str,
+    url: str | None = Query(None, description="URL alternativa; por defecto, la del catálogo"),
+) -> dict[str, Any]:
+    """Trae la foto del anuncio de referencia del modelo.
+
+    La descarga la hace el servidor, no el navegador: así la imagen queda
+    guardada y servida por la propia app. Enlazarla directamente daría fotos
+    rotas, porque las tiendas rechazan las peticiones que no vienen de su web.
+    """
+    return _fetch_model_image(model_id, url)
+
+
 @app.post("/api/prefab-models/images/fetch-all", tags=["simulacion"])
 def fetch_all_prefab_images() -> dict[str, Any]:
     """Intenta traer la foto de todos los modelos que tengan referencia."""
@@ -272,8 +282,9 @@ def fetch_all_prefab_images() -> dict[str, Any]:
             resultados.append({"model_id": model.id, "skipped": "sin anuncio de referencia"})
             continue
         try:
-            resultados.append(fetch_prefab_model_image(model.id))
+            resultados.append(_fetch_model_image(model.id))
         except HTTPException as exc:
+            # Que una tienda bloquee no debe impedir traer las demás.
             resultados.append({"model_id": model.id, "error": str(exc.detail)[:250]})
     return {
         "results": resultados,

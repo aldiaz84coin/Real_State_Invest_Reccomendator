@@ -1281,6 +1281,32 @@ class TestImagenDeReferencia:
         with pytest.raises(SourceError, match="no admitido"):
             self._source().fetch("https://cdn/x.svg")
 
+    def test_un_bloqueo_de_red_no_provoca_un_500(self, monkeypatch):
+        """Escapaba como httpx.ProxyError y el endpoint devolvía 500.
+
+        Cualquier fallo de red debe salir como SourceError, que es lo único
+        que la capa web espera atrapar.
+        """
+        from app.sources.base import SourceError
+
+        def fake(self, method, url, **kw):
+            raise httpx.ProxyError("403 Forbidden")
+
+        monkeypatch.setattr(httpx.Client, "request", fake)
+        with pytest.raises(SourceError) as error:
+            self._source().fetch("https://www.amazon.es/dp/X")
+        assert "amazon.es" in str(error.value)
+
+    def test_un_fallo_de_conexion_tampoco(self, monkeypatch):
+        from app.sources.base import SourceError
+
+        def fake(self, method, url, **kw):
+            raise httpx.ConnectError("nombre no resuelto")
+
+        monkeypatch.setattr(httpx.Client, "request", fake)
+        with pytest.raises(SourceError, match="No se pudo acceder"):
+            self._source().fetch("https://tienda.invalida/p")
+
     def test_manda_referer_para_no_ser_bloqueado(self, monkeypatch):
         cabeceras = {}
 

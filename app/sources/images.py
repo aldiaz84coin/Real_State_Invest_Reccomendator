@@ -12,6 +12,8 @@ import re
 from html import unescape
 from urllib.parse import urljoin, urlparse
 
+import httpx
+
 from app.sources.base import BaseSource, SourceError
 
 # Metaetiquetas donde las tiendas publican su imagen principal, en el orden en
@@ -80,7 +82,7 @@ class ReferenceImageSource(BaseSource):
         if not urlparse(page_url).scheme.startswith("http"):
             raise SourceError("La URL de referencia debe ser http o https.")
 
-        response = self.request("GET", page_url, headers={"Referer": page_url})
+        response = self._get(page_url)
         if response.status_code != 200:
             raise SourceError(
                 f"La página de referencia respondió HTTP {response.status_code}. "
@@ -107,9 +109,7 @@ class ReferenceImageSource(BaseSource):
                 "directa de la foto, o súbela a mano."
             )
 
-        image_response = self.request(
-            "GET", image_url, headers={"Referer": page_url}
-        )
+        image_response = self._get(image_url, referer=page_url)
         if image_response.status_code != 200:
             raise SourceError(
                 f"La imagen respondió HTTP {image_response.status_code} "
@@ -120,6 +120,26 @@ class ReferenceImageSource(BaseSource):
             image_response.headers.get("content-type") or ""
         ).split(";")[0].lower()
         return self._validate(image_response.content, content_type)
+
+    def _get(self, url: str, referer: str | None = None) -> httpx.Response:
+        """Petición cuyos fallos de red salen siempre como SourceError.
+
+        Sin esto, un bloqueo del proxy o un DNS caído escapaban como
+        httpx.ProxyError y el endpoint devolvía un 500 en vez de explicar qué
+        había pasado.
+        """
+        try:
+            return self.request("GET", url, headers={"Referer": referer or url})
+        except httpx.ProxyError as exc:
+            raise SourceError(
+                f"La red de este entorno bloquea {urlparse(url).netloc}: {exc}. "
+                "Desde el servidor desplegado sí debería funcionar."
+            ) from None
+        except httpx.HTTPError as exc:
+            raise SourceError(
+                f"No se pudo acceder a {urlparse(url).netloc}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from None
 
     def _validate(self, content: bytes, content_type: str) -> tuple[bytes, str]:
         extension = ALLOWED_CONTENT_TYPES.get(content_type)
