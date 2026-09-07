@@ -12,6 +12,7 @@ configurable y el codigo no asume una forma de respuesta concreta.
 """
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Iterable
 
@@ -442,15 +443,42 @@ class RapidApiFotocasaSource(RapidApiSource):
         except ValueError:
             raise SourceError(f"{self.name}: /suggestions no devolvió JSON.") from None
 
-        combined = _find_key(payload, "combinedlocations")
+        combined = _find_combined_locations(payload)
         if not combined:
+            # El cuerpo va en el propio error: sin el no hay forma de saber
+            # como llama este proveedor al identificador de zona, y remitir al
+            # diagnostico seria circular porque falla en este mismo punto.
+            cuerpo = json.dumps(payload, ensure_ascii=False)[:800]
             raise SourceError(
-                f"{self.name}: /suggestions no devolvió combinedLocations para "
-                f"«{query}». Revisa la respuesta con "
-                "/api/sources/rapidapi/probe para ajustar el mapeo."
+                f"{self.name}: /suggestions respondió pero no se encontró el "
+                f"identificador de zona para «{query}». Respuesta recibida: {cuerpo}"
             )
         self._locations_cache[query] = str(combined)
         return str(combined)
+
+    def suggestions_raw(self, query: str) -> dict[str, Any]:
+        """Respuesta cruda de /suggestions, para diagnosticar el mapeo."""
+        response = self.request(
+            "GET",
+            f"{self.base_url()}{self.suggestions_path}",
+            headers=self.headers(),
+            params={"query": query},
+        )
+        result: dict[str, Any] = {
+            "query": query,
+            "path": self.suggestions_path,
+            "http_status": response.status_code,
+        }
+        try:
+            payload = response.json()
+        except ValueError:
+            result["body_preview"] = response.text[:1500]
+            result["error"] = "La respuesta no es JSON."
+            return result
+
+        result["body"] = payload
+        result["combined_locations_found"] = _find_combined_locations(payload)
+        return result
 
 
 class RapidApiIdealista17Source(RapidApiSource):
@@ -540,6 +568,25 @@ def _looks_like_listings(candidate: list[Any]) -> bool:
         if any(hint in key for key in lowered for hint in PRICE_HINTS):
             return True
     return False
+
+
+# Nombres con los que un proveedor puede llamar al identificador de zona. El
+# de la documentacion es el primero; los demas cubren variaciones habituales.
+COMBINED_LOCATION_KEYS = (
+    "combinedlocations",
+    "combinedlocation",
+    "combined",
+    "locationids",
+    "locationid",
+)
+
+
+def _find_combined_locations(payload: Any) -> Any:
+    for name in COMBINED_LOCATION_KEYS:
+        found = _find_key(payload, name)
+        if found:
+            return found
+    return None
 
 
 def _find_key(payload: Any, target: str) -> Any:

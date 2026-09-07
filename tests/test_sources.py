@@ -877,6 +877,11 @@ class TestFotocasaApiReal:
             get_settings.cache_clear()
 
     def test_avisa_si_suggestions_no_trae_el_identificador(self, monkeypatch):
+        """El error debe llevar la respuesta recibida.
+
+        Remitir al diagnóstico era circular: si la resolución falla, el probe
+        de búsqueda falla en el mismo punto y no llega a enseñar nada.
+        """
         from app.config import get_settings
         from app.sources.base import SourceError
 
@@ -885,11 +890,55 @@ class TestFotocasaApiReal:
             monkeypatch.setattr(
                 httpx.Client, "request",
                 lambda self, method, url, **kw: httpx.Response(
-                    200, json={"suggestions": []}, request=httpx.Request(method, url)
+                    200, json={"suggestions": [{"nombre": "Madrid", "zoneId": 28079}]},
+                    request=httpx.Request(method, url),
                 ),
             )
-            with pytest.raises(SourceError, match="combinedLocations"):
+            with pytest.raises(SourceError) as error:
                 source.resolve_location(40.4, -3.7, query="madrid")
+            mensaje = str(error.value)
+            assert "identificador de zona" in mensaje
+            assert "zoneId" in mensaje       # el cuerpo real viaja en el error
+            assert "28079" in mensaje
+        finally:
+            get_settings.cache_clear()
+
+    def test_reconoce_nombres_alternativos_del_identificador(self, monkeypatch):
+        """La documentación dice combinedLocations, pero la respuesta real
+        podría llamarlo de otra forma."""
+        from app.config import get_settings
+
+        source = self._source(monkeypatch)
+        try:
+            for clave in ("combinedLocations", "combinedLocation", "locationIds"):
+                source._locations_cache.clear()
+                monkeypatch.setattr(
+                    httpx.Client, "request",
+                    lambda self, method, url, _k=clave, **kw: httpx.Response(
+                        200, json={"data": [{_k: "1,2,3"}]},
+                        request=httpx.Request(method, url),
+                    ),
+                )
+                assert source.resolve_location(40.4, -3.7, query="madrid") == "1,2,3", clave
+        finally:
+            get_settings.cache_clear()
+
+    def test_suggestions_raw_devuelve_el_cuerpo_entero(self, monkeypatch):
+        from app.config import get_settings
+
+        source = self._source(monkeypatch)
+        try:
+            monkeypatch.setattr(
+                httpx.Client, "request",
+                lambda self, method, url, **kw: httpx.Response(
+                    200, json={"suggestions": [{"zoneId": 28079}]},
+                    request=httpx.Request(method, url),
+                ),
+            )
+            raw = source.suggestions_raw("madrid")
+            assert raw["http_status"] == 200
+            assert raw["body"] == {"suggestions": [{"zoneId": 28079}]}
+            assert raw["combined_locations_found"] is None
         finally:
             get_settings.cache_clear()
 
