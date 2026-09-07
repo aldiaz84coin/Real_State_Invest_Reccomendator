@@ -24,9 +24,12 @@ class Settings(BaseSettings):
     # de "solo vias oficiales" y por eso van desactivados mientras no haya
     # clave. Host y ruta son configurables porque cada proveedor los cambia sin
     # aviso y no deben requerir tocar codigo.
-    rapidapi_key: str = ""
-    rapidapi_hosts: str = ""   # "clave=host,clave=host"
-    rapidapi_paths: str = ""   # "clave=/ruta,clave=/ruta"
+    # RapidAPI entrega una clave por aplicacion, y lo habitual es crear una por
+    # API suscrita. Por eso hay clave global y ademas clave por fuente.
+    rapidapi_key: str = ""     # respaldo comun si no hay una especifica
+    rapidapi_keys: str = ""    # "clave_fuente=API_KEY,clave_fuente=API_KEY"
+    rapidapi_hosts: str = ""   # "clave_fuente=host"
+    rapidapi_paths: str = ""   # "clave_fuente=/ruta"
 
     # Fuentes publicas abiertas: no requieren credenciales.
     catastro_ovc_url: str = "https://ovc.catastro.meh.es"
@@ -53,7 +56,11 @@ class Settings(BaseSettings):
 
     @property
     def rapidapi_configured(self) -> bool:
-        return bool(self.rapidapi_key)
+        return bool(self.rapidapi_key or self.rapidapi_keys)
+
+    def rapidapi_key_for(self, source_key: str) -> str:
+        """Clave especifica de esa API, o la global si no hay una propia."""
+        return _parse_overrides(self.rapidapi_keys).get(source_key) or self.rapidapi_key
 
     def rapidapi_host_for(self, source_key: str) -> str | None:
         return _parse_overrides(self.rapidapi_hosts).get(source_key)

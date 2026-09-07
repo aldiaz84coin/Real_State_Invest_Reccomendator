@@ -45,11 +45,27 @@ def analyze_listing(
     location = analyze_location(listing.lat, listing.lon, pois)
 
     breakdown = score_opportunity(comparison, trend, location, listing.area_m2)
+
+    # Si las coordenadas no son del anuncio sino del municipio, las distancias
+    # a playa o montaña son orientativas y la ficha no debe presentarlas como
+    # exactas.
+    precision = (listing.raw or {}).get("coords_precision", "exact")
+    if precision != "exact":
+        origen = {
+            "municipality": "el centro del municipio",
+            "search_center": "el centro de la búsqueda",
+        }.get(precision, "una posición aproximada")
+        breakdown.warnings.append(
+            f"El anuncio no traía coordenadas propias: se ha situado en {origen}. "
+            "Las distancias a playa, montaña y puntos de interés son aproximadas."
+        )
+
     detail = {
         "market": comparison.as_dict(),
         "trend": trend.as_dict(),
         "location": location.as_dict(),
         "score": breakdown.as_dict(),
+        "coords_precision": precision,
     }
 
     _persist_score(db, listing, breakdown, comparison, trend, location, detail)

@@ -309,15 +309,23 @@ class TestRapidApiNormalizacion:
         assert result["price_eur"] == pytest.approx(125000.50)
         assert result["area_m2"] == pytest.approx(1250)
 
-    @pytest.mark.parametrize("falta", ["price", "size", "latitude", "propertyCode"])
+    @pytest.mark.parametrize("falta", ["price", "size", "propertyCode"])
     def test_descarta_anuncios_sin_datos_imprescindibles(self, falta):
-        """Sin precio, superficie o coordenadas el anuncio no sirve para analizar."""
+        """Sin precio, superficie o identificador el anuncio no sirve."""
         item = {
             "propertyCode": "1", "price": 1000, "size": 500,
             "latitude": 36.7, "longitude": -4.4,
         }
         del item[falta]
         assert self._source().normalize(item) is None
+
+    def test_las_coordenadas_que_faltan_no_descartan_el_anuncio(self):
+        """Cambio deliberado: la búsqueda de algunos proveedores no las trae, y
+        exigirlas vaciaba el resultado entero sin explicación."""
+        item = {"propertyCode": "1", "price": 1000, "size": 500}
+        result = self._source().normalize(item)
+        assert result is not None
+        assert result["coords_precision"] == "missing"
 
     def test_descarta_superficie_cero(self):
         item = {"propertyCode": "1", "price": 1000, "size": 0,
@@ -407,3 +415,175 @@ class TestParseoNumerico:
             assert resultado is None
         else:
             assert resultado == pytest.approx(esperado)
+
+
+class TestIdealista17:
+    """Contrastado con el ejemplo de respuesta de su propia documentación."""
+
+    EJEMPLO_DOC = {
+        "total": 12847,
+        "totalPages": 322,
+        "actualPage": 1,
+        "itemsPerPage": 40,
+        "elementList": [
+            {
+                "propertyCode": "112345678",
+                "price": 385000,
+                "size": 92,
+                "rooms": 3,
+                "bathrooms": 2,
+                "municipality": "Madrid",
+                "district": "Chamberi",
+                "propertyType": "flat",
+                "operation": "sale",
+                "url": "https://www.idealista.com/inmueble/112345678/",
+            }
+        ],
+    }
+
+    @staticmethod
+    def _source():
+        from app.sources.rapidapi import RapidApiIdealista17Source
+
+        return RapidApiIdealista17Source()
+
+    def test_usa_las_rutas_reales_de_su_documentacion(self):
+        paths = self._source().search_paths
+        assert paths[0] == "/property-search-by-coordinates"
+        assert "/property-search" in paths
+
+    def test_localiza_los_anuncios_del_ejemplo_documentado(self):
+        from app.sources.rapidapi import extract_listings
+
+        assert len(extract_listings(self.EJEMPLO_DOC)) == 1
+
+    def test_la_busqueda_no_devuelve_coordenadas_y_aun_asi_se_conserva(self):
+        """Es el caso real: su respuesta de búsqueda no trae lat/lon.
+
+        Exigirlas descartaría todos los anuncios en silencio, que es
+        justamente el fallo que este comportamiento evita.
+        """
+        from app.sources.rapidapi import extract_listings
+
+        item = extract_listings(self.EJEMPLO_DOC)[0]
+        result = self._source().normalize(item)
+        assert result is not None
+        assert result["lat"] is None and result["lon"] is None
+        assert result["coords_precision"] == "missing"
+        assert result["external_id"] == "112345678"
+        assert result["price_eur"] == 385000
+        assert result["area_m2"] == 92
+        assert result["municipality_name"] == "Madrid"
+        assert result["price_eur_m2"] == pytest.approx(4184.78, abs=0.01)
+
+    def test_marca_como_exactas_las_coordenadas_cuando_vienen(self):
+        item = dict(self.EJEMPLO_DOC["elementList"][0], latitude=40.4, longitude=-3.7)
+        result = self._source().normalize(item)
+        assert result["coords_precision"] == "exact"
+        assert result["lat"] == pytest.approx(40.4)
+
+    def test_sigue_descartando_lo_que_no_sirve(self):
+        source = self._source()
+        assert source.normalize({"propertyCode": "1", "size": 100}) is None      # sin precio
+        assert source.normalize({"propertyCode": "1", "price": 100}) is None     # sin superficie
+        assert source.normalize({"price": 100, "size": 10}) is None              # sin id
+
+    def test_explica_el_motivo_del_descarte(self):
+        source = self._source()
+        assert source.discard_reason({"propertyCode": "1", "size": 10}) == "sin precio"
+        assert source.discard_reason({"propertyCode": "1", "price": 10}) == "sin superficie"
+        assert source.discard_reason({"price": 10, "size": 10}) == "sin identificador"
+
+    def test_los_parametros_de_busqueda_son_de_terrenos_en_venta(self):
+        params = self._source().build_params(36.72, -4.42, 15.0, page=2, max_price=90000)
+        assert params["operation"] == "sale"
+        assert params["propertyType"] == "lands"
+        assert params["country"] == "es"
+        assert params["radius"] == 15000
+        assert params["page"] == 2
+        assert params["maxPrice"] == 90000
+
+    def test_clave_propia_por_fuente(self, monkeypatch):
+        """RapidAPI da una clave por aplicación y suele haber una por API."""
+        from app.config import get_settings
+
+        monkeypatch.setenv("RAPIDAPI_KEYS", "rapidapi_idealista17=clave-17")
+        monkeypatch.setenv("RAPIDAPI_KEY", "clave-global")
+        get_settings.cache_clear()
+        try:
+            from app.sources.rapidapi import RapidApiFotocasaSource
+
+            assert self._source().api_key == "clave-17"
+            # Sin clave propia, cae a la global.
+            assert RapidApiFotocasaSource().api_key == "clave-global"
+        finally:
+            get_settings.cache_clear()
+
+    def test_el_cuerpo_de_error_del_proveedor_se_detecta(self, monkeypatch):
+        """Devuelve 200 con {"error": ...}: no debe pasar por resultado vacío."""
+        from app.sources.base import SourceError
+        from app.config import get_settings
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "x")
+        get_settings.cache_clear()
+        try:
+            source = self._source()
+            monkeypatch.setattr(
+                httpx.Client, "request",
+                lambda self, method, url, **kw: httpx.Response(
+                    200,
+                    json={"error": "upstream_unavailable",
+                          "message": "Upstream source temporarily unavailable"},
+                    request=httpx.Request(method, url),
+                ),
+            )
+            with pytest.raises(SourceError, match="upstream_unavailable"):
+                source.fetch_page({})
+        finally:
+            get_settings.cache_clear()
+
+    def test_prueba_la_siguiente_ruta_ante_un_404(self, monkeypatch):
+        from app.config import get_settings
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "x")
+        get_settings.cache_clear()
+        try:
+            source = self._source()
+            vistos: list[str] = []
+
+            def fake(self, method, url, **kw):
+                vistos.append(url)
+                code = 404 if "by-coordinates" in url else 200
+                return httpx.Response(
+                    code, json=TestIdealista17.EJEMPLO_DOC if code == 200 else {},
+                    request=httpx.Request(method, url),
+                )
+
+            monkeypatch.setattr(httpx.Client, "request", fake)
+            path, payload = source.fetch_page({})
+            assert path == "/property-search"
+            assert len(vistos) == 2  # probó la primera y pasó a la segunda
+        finally:
+            get_settings.cache_clear()
+
+    def test_una_clave_rechazada_no_prueba_mas_rutas(self, monkeypatch):
+        """Un 401 es problema de suscripción, no de ruta: insistir sólo gasta cuota."""
+        from app.sources.base import SourceError
+        from app.config import get_settings
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "x")
+        get_settings.cache_clear()
+        try:
+            source = self._source()
+            llamadas = {"n": 0}
+
+            def fake(self, method, url, **kw):
+                llamadas["n"] += 1
+                return httpx.Response(401, request=httpx.Request(method, url))
+
+            monkeypatch.setattr(httpx.Client, "request", fake)
+            with pytest.raises(SourceError, match="rechazada"):
+                source.fetch_page({})
+            assert llamadas["n"] == 1
+        finally:
+            get_settings.cache_clear()

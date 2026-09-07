@@ -46,24 +46,45 @@ class RapidApiSource(BaseSource):
     licence = "No oficial. Revendedor de datos vía RapidAPI; revisa sus condiciones."
 
     host: str = ""
-    search_path: str = "/"
+    # Varias rutas candidatas en vez de una sola: el esquema de estos
+    # revendedores no esta documentado de forma fiable y la ruta correcta
+    # varia entre proveedores. Se prueban en orden hasta que una devuelve
+    # anuncios, y se recuerda cual funciono.
+    search_paths: tuple[str, ...] = ("/",)
     search_method: str = "GET"
     portal: str = ""
 
     def __init__(self) -> None:
         super().__init__()
         self.host = self.settings.rapidapi_host_for(self.key) or self.host
-        self.search_path = self.settings.rapidapi_path_for(self.key) or self.search_path
+        override = self.settings.rapidapi_path_for(self.key)
+        if override:
+            self.search_paths = (override,)
+        self._working_path: str | None = None
+        # Anuncios recibidos que no se pudieron usar, por motivo. Se reporta
+        # en la ingesta: descartar en silencio oculta un mapeo roto.
+        self.discarded: dict[str, int] = {}
+
+    @property
+    def api_key(self) -> str:
+        """RapidAPI da una clave por aplicacion y suele haber una por API."""
+        return self.settings.rapidapi_key_for(self.key)
+
+    @property
+    def search_path(self) -> str:
+        """Ruta en uso: la que ya funciono, o la primera candidata."""
+        return self._working_path or self.search_paths[0]
 
     @property
     def configured(self) -> bool:
-        return bool(self.settings.rapidapi_key and self.host)
+        return bool(self.api_key and self.host)
 
     def headers(self) -> dict[str, str]:
         return {
-            "x-rapidapi-key": self.settings.rapidapi_key,
+            "x-rapidapi-key": self.api_key,
             "x-rapidapi-host": self.host,
             "Accept": "application/json",
+            "Content-Type": "application/json",
         }
 
     def base_url(self) -> str:
@@ -98,32 +119,82 @@ class RapidApiSource(BaseSource):
                 min_size_m2=min_size_m2, max_size_m2=max_size_m2,
                 max_price=max_price, page=page,
             )
+            path, payload = self.fetch_page(params)
+            items = extract_listings(payload)
+            if not items:
+                break
+            self._working_path = path
+            for item in items:
+                normalized = self.normalize(item)
+                if normalized is None:
+                    reason = self.discard_reason(item)
+                    self.discarded[reason] = self.discarded.get(reason, 0) + 1
+                    continue
+                results.append(normalized)
+        return results
+
+    def discard_reason(self, item: dict[str, Any]) -> str:
+        """Por qué no se pudo usar un anuncio. Lo consume el diagnóstico."""
+        if _as_float(pick(item, FIELD_CANDIDATES["price_eur"])) in (None, 0):
+            return "sin precio"
+        if _as_float(pick(item, FIELD_CANDIDATES["area_m2"])) in (None, 0):
+            return "sin superficie"
+        if pick(item, FIELD_CANDIDATES["external_id"]) is None:
+            return "sin identificador"
+        return "motivo desconocido"
+
+    def fetch_page(self, params: dict[str, Any]) -> tuple[str, Any]:
+        """Pide una pagina probando las rutas candidatas.
+
+        Devuelve la ruta que funciono y el cuerpo ya decodificado. Solo se
+        pasa a la siguiente candidata cuando la respuesta indica que la ruta
+        no existe; un 401 o un 429 son problemas de la clave o de la cuota y
+        no mejoran cambiando de ruta.
+        """
+        candidates = (self._working_path,) if self._working_path else self.search_paths
+        errors: list[str] = []
+
+        for path in candidates:
             response = self.request(
                 self.search_method,
-                f"{self.base_url()}{self.search_path}",
+                f"{self.base_url()}{path}",
                 headers=self.headers(),
                 params=params,
             )
             if response.status_code == 429:
                 raise SourceError(f"{self.name}: cuota de RapidAPI agotada (HTTP 429).")
+            if response.status_code in (401, 403):
+                raise SourceError(
+                    f"{self.name}: la clave fue rechazada (HTTP {response.status_code}). "
+                    "Comprueba que estás suscrito a esta API en RapidAPI."
+                )
+            if response.status_code in (404, 400):
+                errors.append(f"{path} -> HTTP {response.status_code}")
+                continue
             if response.status_code != 200:
                 raise SourceError(
-                    f"{self.name}: HTTP {response.status_code} — {response.text[:180]}"
+                    f"{self.name}: HTTP {response.status_code} en {path} — "
+                    f"{response.text[:180]}"
                 )
-
             try:
                 payload = response.json()
             except ValueError:
-                raise SourceError(f"{self.name} devolvió una respuesta que no es JSON.") from None
+                errors.append(f"{path} -> respuesta no JSON")
+                continue
+            # El proveedor devuelve 200 con cuerpo de error en algunos fallos
+            # de la fuente de origen; conviene no tomarlo por resultado vacío.
+            if isinstance(payload, dict) and payload.get("error"):
+                raise SourceError(
+                    f"{self.name}: {payload.get('error')} — "
+                    f"{payload.get('message', 'sin detalle')}"
+                )
+            return path, payload
 
-            items = extract_listings(payload)
-            if not items:
-                break
-            results.extend(
-                normalized for item in items
-                if (normalized := self.normalize(item)) is not None
-            )
-        return results
+        raise SourceError(
+            f"{self.name}: ninguna ruta candidata respondió. Intentos: "
+            + "; ".join(errors)
+            + ". Ajusta RAPIDAPI_PATHS con la ruta correcta."
+        )
 
     def normalize(self, item: dict[str, Any]) -> dict[str, Any] | None:
         """Traduce un anuncio del proveedor al esquema interno.
@@ -137,8 +208,16 @@ class RapidApiSource(BaseSource):
         lon = _as_float(pick(item, FIELD_CANDIDATES["lon"]))
         external_id = pick(item, FIELD_CANDIDATES["external_id"])
 
-        if not price or not area or lat is None or lon is None or external_id is None:
+        # Sin precio, superficie o identificador el anuncio no sirve de nada.
+        if not price or not area or external_id is None:
             return None
+
+        # Las coordenadas sí pueden faltar: la busqueda de algunos proveedores
+        # no las devuelve y solo aparecen en el detalle de cada anuncio, que
+        # costaria una peticion extra por inmueble. En vez de descartarlos, se
+        # marcan como pendientes y la ingesta los situa en el municipio.
+        raw = dict(item)
+        raw["coords_precision"] = "exact" if lat is not None and lon is not None else "missing"
 
         return {
             "source": self.key,
@@ -151,18 +230,20 @@ class RapidApiSource(BaseSource):
             "price_eur_m2": round(price / area, 2),
             "lat": lat,
             "lon": lon,
+            "coords_precision": raw["coords_precision"],
             "address": str(pick(item, FIELD_CANDIDATES["address"]) or ""),
             "municipality_name": str(pick(item, FIELD_CANDIDATES["municipality_name"]) or ""),
             "province": str(pick(item, FIELD_CANDIDATES["province"]) or ""),
             "land_type": str(pick(item, FIELD_CANDIDATES["land_type"]) or "lands"),
-            "raw": item,
+            "raw": raw,
         }
 
     def check(self) -> SourceStatus:
-        if not self.settings.rapidapi_key:
+        if not self.api_key:
             return self._status(
                 "needs_credentials",
-                "Respaldo no oficial, desactivado. Configura RAPIDAPI_KEY para "
+                "Respaldo no oficial, desactivado. Configura RAPIDAPI_KEY (o una "
+                f"clave propia en RAPIDAPI_KEYS como '{self.key}=...') para "
                 f"habilitarlo. Cubre {self.portal or 'el portal'} cuando la vía "
                 "oficial no está disponible.",
             )
@@ -188,7 +269,7 @@ class RapidApiIdealistaSource(RapidApiSource):
     name = "Idealista vía RapidAPI (respaldo no oficial)"
     portal = "Idealista"
     host = "idealista-api1.p.rapidapi.com"
-    search_path = "/properties/list"
+    search_paths = ("/properties/list", "/properties/search", "/property/search", "/search")
     docs_url = "https://rapidapi.com/oneapiproject/api/idealista-api1"
 
     def build_params(self, lat: float, lon: float, radius_km: float, **filters: Any) -> dict[str, Any]:
@@ -220,7 +301,7 @@ class RapidApiFotocasaSource(RapidApiSource):
     name = "Fotocasa vía RapidAPI (respaldo no oficial)"
     portal = "Fotocasa"
     host = "fotocasa3.p.rapidapi.com"
-    search_path = "/search"
+    search_paths = ("/search", "/properties/search", "/properties/list", "/listings")
     docs_url = "https://rapidapi.com/happyendpoint/api/fotocasa3"
 
     def build_params(self, lat: float, lon: float, radius_km: float, **filters: Any) -> dict[str, Any]:
@@ -232,6 +313,51 @@ class RapidApiFotocasaSource(RapidApiSource):
             "distance": int(radius_km * 1000),
             "page": filters.get("page", 1),
         }
+        if filters.get("max_price"):
+            params["maxPrice"] = int(filters["max_price"])
+        return params
+
+
+class RapidApiIdealista17Source(RapidApiSource):
+    """Idealista Data API de HappyEndpoint.
+
+    Su esquema replica el de la API oficial de Idealista (envoltorio
+    `elementList`, `propertyCode`, `price`, `size`), asi que el mapeo generico
+    ya encaja. Se usa la busqueda por coordenadas porque es la unica que casa
+    con como busca esta aplicacion: un radio alrededor de un punto.
+
+    Ojo con la cuota: el plan gratuito son 500 peticiones al mes, de ahi que
+    el numero de paginas por defecto sea bajo.
+    """
+
+    key = "rapidapi_idealista17"
+    name = "Idealista Data API vía RapidAPI (respaldo no oficial)"
+    portal = "Idealista"
+    host = "idealista17.p.rapidapi.com"
+    # Rutas reales de su documentacion, de la mas especifica a la mas general.
+    search_paths = ("/property-search-by-coordinates", "/property-search")
+    docs_url = "https://rapidapi.com/happyendpoint/api/idealista17"
+    licence = (
+        "No oficial. Servicio independiente sin relación con Idealista; "
+        "plan gratuito de 500 peticiones al mes."
+    )
+
+    def build_params(self, lat: float, lon: float, radius_km: float, **filters: Any) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "country": "es",
+            "operation": "sale",
+            "propertyType": "lands",
+            "locale": "es",
+            "latitude": lat,
+            "longitude": lon,
+            "radius": int(radius_km * 1000),
+            "page": filters.get("page", 1),
+            "maxItems": 40,
+        }
+        if filters.get("min_size_m2"):
+            params["minSize"] = int(filters["min_size_m2"])
+        if filters.get("max_size_m2"):
+            params["maxSize"] = int(filters["max_size_m2"])
         if filters.get("max_price"):
             params["maxPrice"] = int(filters["max_price"])
         return params
@@ -347,5 +473,7 @@ def _resolve_separator(text: str, separator: str) -> str:
 
 
 def iter_rapidapi_sources() -> Iterable[RapidApiSource]:
+    # idealista17 va primero: es el proveedor mas completo de los tres.
+    yield RapidApiIdealista17Source()
     yield RapidApiIdealistaSource()
     yield RapidApiFotocasaSource()
