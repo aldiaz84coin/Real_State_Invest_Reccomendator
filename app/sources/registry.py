@@ -12,6 +12,7 @@ from app.sources.catastro import CatastroSource
 from app.sources.idealista import FotocasaSource, IdealistaSource, PisosComSource
 from app.sources.osm import NominatimSource, OverpassSource
 from app.sources.prices import IneSource, MivauLandPriceSource
+from app.sources.rapidapi import iter_rapidapi_sources
 from app.sources.rental import AirDnaSource, AirRoiSource, InsideAirbnbSource
 
 
@@ -25,6 +26,7 @@ def build_sources() -> list[BaseSource]:
         IdealistaSource(),
         FotocasaSource(),
         PisosComSource(),
+        *iter_rapidapi_sources(),
         CatastroSource(),
         IneSource(),
         MivauLandPriceSource(),
@@ -75,6 +77,8 @@ def check_all(db: Session | None = None, timeout: float = 45.0) -> dict[str, Any
 
     required_ok = all(s.ok for s in statuses if s.required)
     has_listings = any(s.ok for s in statuses if s.kind == "listings")
+    official_listings = any(s.ok for s in statuses if s.key == "idealista")
+    fallback_listings = any(s.ok for s in statuses if s.key.startswith("rapidapi_"))
 
     return {
         "sources": [s.as_dict() for s in statuses],
@@ -86,6 +90,8 @@ def check_all(db: Session | None = None, timeout: float = 45.0) -> dict[str, Any
             "error": sum(1 for s in statuses if s.access == "error"),
             "required_ok": required_ok,
             "listings_available": has_listings,
+            "official_listings": official_listings,
+            "fallback_listings": fallback_listings,
             "operational": required_ok,
             "note": (
                 "Las fuentes obligatorias (Catastro, INE, OSM) son abiertas y no "

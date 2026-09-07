@@ -32,6 +32,7 @@ from app.sources.base import SourceError
 from app.sources.catastro import CatastroSource
 from app.sources.idealista import IdealistaSource
 from app.sources.osm import OverpassSource
+from app.sources.rapidapi import extract_listings, iter_rapidapi_sources
 from app.sources.registry import check_all
 from app.sources.rental import InsideAirbnbSource
 
@@ -314,19 +315,41 @@ def api_ingest_listings(
     request: IngestListingsRequest, db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     """Descarga terrenos de Idealista y los guarda enriquecidos con Catastro."""
-    source = IdealistaSource()
-    try:
-        items = source.search_lands(
-            request.lat,
-            request.lon,
-            request.radius_km,
-            min_size_m2=request.min_size_m2,
-            max_size_m2=request.max_size_m2,
-            max_price=request.max_price_eur,
-            max_pages=request.max_pages,
+    # Orden deliberado: primero la vía oficial; los proveedores de RapidAPI son
+    # revendedores no oficiales y sólo entran si la oficial no está disponible.
+    providers: list = [IdealistaSource(), *iter_rapidapi_sources()]
+    attempts: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
+    used = ""
+
+    for provider in providers:
+        try:
+            items = provider.search_lands(
+                request.lat,
+                request.lon,
+                request.radius_km,
+                min_size_m2=request.min_size_m2,
+                max_size_m2=request.max_size_m2,
+                max_price=request.max_price_eur,
+                max_pages=request.max_pages,
+            )
+        except (SourceError, NotImplementedError) as exc:
+            attempts.append({"source": provider.key, "error": str(exc)[:300]})
+            continue
+
+        if items:
+            used = provider.key
+            break
+        attempts.append({"source": provider.key, "error": "sin resultados"})
+
+    if not used:
+        raise HTTPException(
+            502,
+            {
+                "message": "Ninguna fuente de anuncios devolvió resultados.",
+                "attempts": attempts,
+            },
         )
-    except SourceError as exc:
-        raise HTTPException(502, str(exc)) from None
 
     created = updated = 0
     for item in items:
@@ -354,7 +377,94 @@ def api_ingest_listings(
             listing.municipality_id = municipality.id
 
     db.commit()
-    return {"fetched": len(items), "created": created, "updated": updated}
+    return {
+        "fetched": len(items),
+        "created": created,
+        "updated": updated,
+        "source_used": used,
+        "fallbacks_tried": attempts,
+    }
+
+
+@app.get("/api/sources/rapidapi/probe", tags=["fuentes"])
+def api_probe_rapidapi(
+    source: str = Query("rapidapi_idealista", description="Clave de la fuente a sondear"),
+    lat: float = 36.7213,
+    lon: float = -4.4214,
+    radius_km: float = 15.0,
+) -> dict[str, Any]:
+    """Diagnostica el mapeo de un proveedor de RapidAPI contra datos reales.
+
+    Existe porque el esquema de estos revendedores no está documentado de forma
+    fiable y cambia sin aviso. Devuelve qué devolvió la API y qué se pudo mapear,
+    para poder corregir host, ruta o campos sin ir a ciegas. Nunca expone la
+    clave: sólo dice si está configurada.
+    """
+    provider = next((p for p in iter_rapidapi_sources() if p.key == source), None)
+    if provider is None:
+        raise HTTPException(
+            404,
+            f"Fuente '{source}' desconocida. Disponibles: "
+            + ", ".join(p.key for p in iter_rapidapi_sources()),
+        )
+    if not provider.configured:
+        raise HTTPException(422, f"{provider.name} no está configurada: falta RAPIDAPI_KEY.")
+
+    params = provider.build_params(lat, lon, radius_km, page=1)
+    try:
+        response = provider.request(
+            provider.search_method,
+            f"{provider.base_url()}{provider.search_path}",
+            headers=provider.headers(),
+            params=params,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"{type(exc).__name__}: {exc}") from None
+
+    diagnosis: dict[str, Any] = {
+        "source": provider.key,
+        "host": provider.host,
+        "path": provider.search_path,
+        "params_sent": params,
+        "http_status": response.status_code,
+    }
+
+    try:
+        payload = response.json()
+    except ValueError:
+        diagnosis["error"] = "La respuesta no es JSON."
+        diagnosis["body_preview"] = response.text[:500]
+        return diagnosis
+
+    diagnosis["top_level_keys"] = (
+        sorted(payload)[:30] if isinstance(payload, dict) else f"lista de {len(payload)}"
+    )
+    raw_items = extract_listings(payload)
+    diagnosis["listings_found"] = len(raw_items)
+
+    if not raw_items:
+        # Sin esto habría que adivinar: se enseña un trozo del cuerpo real.
+        diagnosis["body_preview"] = json.dumps(payload, ensure_ascii=False)[:1200]
+        diagnosis["hint"] = (
+            "No se localizó ninguna lista de anuncios. Revisa la ruta "
+            "(RAPIDAPI_PATHS) o pásame este cuerpo para ajustar el mapeo."
+        )
+        return diagnosis
+
+    sample = raw_items[0]
+    diagnosis["sample_raw_keys"] = sorted(sample)[:40]
+    normalized = provider.normalize(sample)
+    diagnosis["sample_normalized"] = normalized
+    if normalized is None:
+        diagnosis["hint"] = (
+            "Se encontraron anuncios pero faltan campos obligatorios "
+            "(precio, superficie o coordenadas). Compara sample_raw_keys con "
+            "los nombres esperados para ajustar el mapeo."
+        )
+    else:
+        mapped = sum(1 for v in normalized.values() if v not in (None, "", 0))
+        diagnosis["hint"] = f"Mapeo correcto: {mapped} campos con valor."
+    return diagnosis
 
 
 @app.post("/api/ingest/pois", tags=["ingesta"])
