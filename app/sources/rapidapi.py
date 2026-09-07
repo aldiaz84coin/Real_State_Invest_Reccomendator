@@ -297,8 +297,11 @@ class RapidApiSource(BaseSource):
         # marcaba en rojo a proveedores que sí funcionan por otra ruta.
         started = time.perf_counter()
         try:
+            # prepare_params y no build_params: los proveedores que resuelven
+            # la zona en una llamada previa necesitan ese paso, y saltárselo
+            # manda la petición sin parámetros obligatorios.
             path, payload = self.fetch_page(
-                self.build_params(36.7213, -4.4214, 10.0, page=1)
+                self.prepare_params(36.7213, -4.4214, 10.0, page=1)
             )
         except SourceError as exc:
             message = str(exc)

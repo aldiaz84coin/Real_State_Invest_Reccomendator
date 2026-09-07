@@ -467,7 +467,18 @@ def api_probe_rapidapi(
     if not provider.configured:
         raise HTTPException(422, f"{provider.name} no está configurada: falta RAPIDAPI_KEY.")
 
-    params = provider.build_params(lat, lon, radius_km, page=1)
+    # prepare_params, no build_params: si el proveedor necesita resolver la
+    # zona antes de buscar, el diagnóstico debe hacer el mismo recorrido que la
+    # búsqueda real o comprobaría algo que nunca ocurre.
+    try:
+        params = provider.prepare_params(lat, lon, radius_km, page=1)
+    except Exception as exc:
+        raise HTTPException(
+            502,
+            f"No se pudieron preparar los parámetros de {provider.name}: "
+            f"{type(exc).__name__}: {exc}",
+        ) from None
+
     try:
         response = provider.request(
             provider.search_method,
