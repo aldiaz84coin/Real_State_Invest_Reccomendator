@@ -595,13 +595,16 @@ class TestDiagnosticoDelPanel:
     fijan que el sondeo use el mismo mecanismo que la búsqueda."""
 
     @staticmethod
-    def _source(monkeypatch):
+    def _source(monkeypatch, cls=None):
         from app.config import get_settings
-        from app.sources.rapidapi import RapidApiFotocasaSource
+        from app.sources.rapidapi import RapidApiIdealista17Source, clear_check_cache
 
         monkeypatch.setenv("RAPIDAPI_KEY", "clave")
         get_settings.cache_clear()
-        return RapidApiFotocasaSource()
+        # La caché de comprobaciones es global: sin limpiarla, un test vería
+        # el resultado del anterior.
+        clear_check_cache()
+        return (cls or RapidApiIdealista17Source)()
 
     def test_el_sondeo_prueba_las_rutas_alternativas(self, monkeypatch):
         from app.config import get_settings
@@ -609,12 +612,10 @@ class TestDiagnosticoDelPanel:
         source = self._source(monkeypatch)
         try:
             visitadas: list[str] = []
-
             ruta_buena = source.search_paths[1]
 
             def fake(self, method, url, **kw):
                 visitadas.append(url)
-                # Sólo existe la segunda candidata; la primera devuelve 404.
                 if url.endswith(ruta_buena):
                     return httpx.Response(
                         200, json={"elementList": [{"price": 1, "size": 1}]},
@@ -625,7 +626,7 @@ class TestDiagnosticoDelPanel:
             monkeypatch.setattr(httpx.Client, "request", fake)
             status = source.check()
             assert status.access == "ok", status.detail
-            assert len(visitadas) == 2  # descartó la primera y acertó en la segunda
+            assert len(visitadas) == 2
             assert ruta_buena in status.detail
             assert "Anuncios localizados en la prueba: 1" in status.detail
         finally:
@@ -689,21 +690,105 @@ class TestDiagnosticoDelPanel:
 
     def test_sin_clave_no_hace_ninguna_peticion(self, monkeypatch):
         from app.config import get_settings
-        from app.sources.rapidapi import RapidApiFotocasaSource
+        from app.sources.rapidapi import RapidApiFotocasaSource, clear_check_cache
 
         monkeypatch.delenv("RAPIDAPI_KEY", raising=False)
         monkeypatch.delenv("RAPIDAPI_KEYS", raising=False)
         get_settings.cache_clear()
+        clear_check_cache()
         try:
-            llamadas = {"n": 0}
-
             def fake(self, method, url, **kw):
-                llamadas["n"] += 1
                 raise AssertionError("no debería pedir nada sin clave")
 
             monkeypatch.setattr(httpx.Client, "request", fake)
             status = RapidApiFotocasaSource().check()
             assert status.access == "needs_credentials"
-            assert llamadas["n"] == 0
         finally:
             get_settings.cache_clear()
+
+
+class TestCuotaDeRapidApi:
+    """Cada comprobación cuesta una petición del plan y el panel sondea todas
+    las fuentes en cada carga. Sin estos dos frenos, unas pocas visitas al día
+    agotarían un plan gratuito de 500 al mes sólo comprobando."""
+
+    @staticmethod
+    def _fotocasa(monkeypatch):
+        from app.config import get_settings
+        from app.sources.rapidapi import RapidApiFotocasaSource, clear_check_cache
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "clave")
+        get_settings.cache_clear()
+        clear_check_cache()
+        return RapidApiFotocasaSource()
+
+    def test_fotocasa_usa_su_endpoint_de_salud_y_no_una_busqueda(self, monkeypatch):
+        from app.config import get_settings
+
+        source = self._fotocasa(monkeypatch)
+        try:
+            urls: list[str] = []
+
+            def fake(self, method, url, **kw):
+                urls.append(url)
+                return httpx.Response(200, json={"status": "ok"},
+                                      request=httpx.Request(method, url))
+
+            monkeypatch.setattr(httpx.Client, "request", fake)
+            status = source.check()
+            assert status.access == "ok"
+            assert len(urls) == 1
+            assert urls[0].endswith("/health")   # no gastó una búsqueda
+        finally:
+            get_settings.cache_clear()
+
+    def test_la_comprobacion_se_cachea(self, monkeypatch):
+        from app.config import get_settings
+
+        source = self._fotocasa(monkeypatch)
+        try:
+            llamadas = {"n": 0}
+
+            def fake(self, method, url, **kw):
+                llamadas["n"] += 1
+                return httpx.Response(200, json={}, request=httpx.Request(method, url))
+
+            monkeypatch.setattr(httpx.Client, "request", fake)
+            source.check()
+            source.check()
+            source.check()
+            # Tres cargas del panel, una sola petición a la API.
+            assert llamadas["n"] == 1
+        finally:
+            get_settings.cache_clear()
+
+    def test_la_cache_caduca(self, monkeypatch):
+        from app.config import get_settings
+        import app.sources.rapidapi as mod
+
+        source = self._fotocasa(monkeypatch)
+        try:
+            llamadas = {"n": 0}
+
+            def fake(self, method, url, **kw):
+                llamadas["n"] += 1
+                return httpx.Response(200, json={}, request=httpx.Request(method, url))
+
+            monkeypatch.setattr(httpx.Client, "request", fake)
+            source.check()
+            # Se envejece la entrada más allá del TTL. El reloj real se captura
+            # antes de parchear, o la sustitución se llamaría a sí misma.
+            ahora = mod.time.time()
+            monkeypatch.setattr(
+                mod.time, "time", lambda: ahora + mod.CHECK_CACHE_SECONDS + 1
+            )
+            source.check()
+            assert llamadas["n"] == 2
+        finally:
+            get_settings.cache_clear()
+
+    def test_fotocasa_busca_en_la_ruta_real_de_su_documentacion(self):
+        from app.sources.rapidapi import RapidApiFotocasaSource
+
+        # /searchads, no /search: las cuatro rutas anteriores daban 404.
+        assert RapidApiFotocasaSource().search_paths[0] == "/searchads"
