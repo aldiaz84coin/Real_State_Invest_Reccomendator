@@ -9,6 +9,23 @@ import httpx
 
 from app.config import get_settings
 
+# Fallos que casi siempre son pasajeros y merecen otro intento. El primero es
+# el habitual con los servicios OVC del Catastro: una pila .NET antigua que
+# corta la conexion sin responder cuando esta cargada.
+TRANSIENT_EXCEPTIONS = (
+    httpx.RemoteProtocolError,
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+)
+# 429 se incluye porque varias fuentes publicas lo usan como freno momentaneo.
+TRANSIENT_STATUS = (429, 500, 502, 503, 504)
+
+DEFAULT_ATTEMPTS = 3
+DEFAULT_BACKOFF_SECONDS = 0.6
+
 
 @dataclass
 class SourceStatus:
@@ -67,6 +84,48 @@ class BaseSource:
             **kwargs,
         )
 
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        attempts: int = DEFAULT_ATTEMPTS,
+        backoff: float = DEFAULT_BACKOFF_SECONDS,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Peticion HTTP que reintenta los fallos pasajeros.
+
+        Un corte de conexion o un 503 puntual no significan que la fuente no
+        sirva: sin reintentos, una caida de un segundo del Catastro se
+        reportaba como fuente caida. Los errores permanentes (404, 401, un
+        bloqueo del proxy) se propagan al primer intento, porque reintentarlos
+        solo suma latencia.
+        """
+        last_exception: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                with self.client() as client:
+                    response = client.request(method, url, **kwargs)
+            except httpx.ProxyError:
+                raise  # bloqueo de politica de red: reintentar no ayuda
+            except TRANSIENT_EXCEPTIONS as exc:
+                last_exception = exc
+                if attempt == attempts:
+                    raise
+            else:
+                if response.status_code in TRANSIENT_STATUS and attempt < attempts:
+                    last_exception = None
+                else:
+                    return response
+
+            # Espera creciente para no insistir sobre un servicio saturado.
+            time.sleep(backoff * (2 ** (attempt - 1)))
+
+        if last_exception is not None:  # pragma: no cover - defensivo
+            raise last_exception
+        raise SourceError(f"Sin respuesta utilizable de {url} tras {attempts} intentos.")
+
     def check(self) -> SourceStatus:  # pragma: no cover - lo implementa cada hijo
         raise NotImplementedError
 
@@ -88,12 +147,19 @@ class BaseSource:
         """
         started = time.perf_counter()
         try:
-            with self.client() as client:
-                response = client.request(method, url, **kwargs)
+            response = self.request(method, url, **kwargs)
         except httpx.ProxyError as exc:
             return self._status(
                 "unavailable",
                 f"Bloqueado por el proxy de salida del entorno, no por la fuente: {exc}",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+            )
+        except TRANSIENT_EXCEPTIONS as exc:
+            return self._status(
+                "error",
+                f"La fuente cortó la conexión en los {DEFAULT_ATTEMPTS} intentos "
+                f"({type(exc).__name__}). Suele ser una caída pasajera del "
+                "servicio; vuelve a comprobarlo en unos minutos.",
                 latency_ms=int((time.perf_counter() - started) * 1000),
             )
         except httpx.HTTPError as exc:

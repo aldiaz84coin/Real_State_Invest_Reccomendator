@@ -52,12 +52,12 @@ class IdealistaSource(BaseSource):
             "Authorization": f"Basic {self._basic_auth_header()}",
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
         }
-        with self.client() as client:
-            response = client.post(
-                url,
-                headers=headers,
-                data={"grant_type": "client_credentials", "scope": "read"},
-            )
+        response = self.request(
+            "POST",
+            url,
+            headers=headers,
+            data={"grant_type": "client_credentials", "scope": "read"},
+        )
         if response.status_code != 200:
             raise SourceError(
                 f"Idealista rechazo las credenciales (HTTP {response.status_code}): {response.text[:200]}"
@@ -107,10 +107,9 @@ class IdealistaSource(BaseSource):
             if max_price:
                 params["maxPrice"] = int(max_price)
 
-            with self.client() as client:
-                response = client.post(
-                    url, headers={"Authorization": f"Bearer {token}"}, params=params
-                )
+            response = self.request(
+                "POST", url, headers={"Authorization": f"Bearer {token}"}, params=params
+            )
             if response.status_code == 429:
                 raise SourceError(
                     "Cuota de la API de Idealista agotada (HTTP 429). "
