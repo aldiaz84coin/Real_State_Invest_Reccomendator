@@ -56,6 +56,9 @@ class RapidApiSource(BaseSource):
     search_paths: tuple[str, ...] = ("/",)
     search_method: str = "GET"
     portal: str = ""
+    # Ruta barata para comprobar el estado sin consumir una busqueda. Solo
+    # algunos proveedores la ofrecen.
+    health_path: str | None = None
 
     def __init__(self) -> None:
         super().__init__()
@@ -259,9 +262,29 @@ class RapidApiSource(BaseSource):
                 f"Falta el host de RapidAPI para {self.key}. Defínelo en "
                 f"RAPIDAPI_HOSTS como '{self.key}=mi-host.p.rapidapi.com'.",
             )
-        # Se sondea con el mismo mecanismo que usa la búsqueda real, probando
-        # las rutas candidatas. Sondear sólo la primera marcaba en rojo a
-        # proveedores que sí funcionan por otra ruta.
+        cached = _cached_status(self.key)
+        if cached is not None:
+            return cached
+
+        # Si el proveedor ofrece un endpoint de salud, se usa ese: comprobar
+        # con una busqueda real gastaria cuota del plan gratuito en cada carga
+        # del panel.
+        if self.health_path:
+            status = self._timed_probe(
+                f"{self.base_url()}{self.health_path}", headers=self.headers()
+            )
+            if status.access == "ok":
+                status.detail = (
+                    f"El proveedor responde en {self.health_path}. El mapeo de "
+                    "anuncios se verifica en /api/sources/rapidapi/probe, que sí "
+                    "consume una petición."
+                )
+            _store_status(self.key, status)
+            return status
+
+        # Sin endpoint de salud se sondea con el mismo mecanismo que la
+        # búsqueda real, probando las rutas candidatas: sondear sólo la primera
+        # marcaba en rojo a proveedores que sí funcionan por otra ruta.
         started = time.perf_counter()
         try:
             path, payload = self.fetch_page(
@@ -271,10 +294,10 @@ class RapidApiSource(BaseSource):
             message = str(exc)
             latency = int((time.perf_counter() - started) * 1000)
             if "rechazada" in message:
-                return self._status("needs_credentials", message, 401, latency)
+                return _store_status(self.key, self._status("needs_credentials", message, 401, latency))
             if "cuota" in message:
-                return self._status("error", message, 429, latency)
-            return self._status("error", message, latency_ms=latency)
+                return _store_status(self.key, self._status("error", message, 429, latency))
+            return _store_status(self.key, self._status("error", message, latency_ms=latency))
         except httpx.ProxyError as exc:
             return self._status("unavailable", f"Bloqueado por el proxy de salida: {exc}")
         except httpx.HTTPError as exc:
@@ -289,7 +312,7 @@ class RapidApiSource(BaseSource):
                 "prueba, o indicar que hay que ajustar el mapeo. Compruébalo "
                 "en /api/sources/rapidapi/probe."
             )
-        return self._status("ok", detail, 200, latency)
+        return _store_status(self.key, self._status("ok", detail, 200, latency))
 
 
 class RapidApiIdealistaSource(RapidApiSource):
@@ -329,7 +352,11 @@ class RapidApiFotocasaSource(RapidApiSource):
     name = "Fotocasa vía RapidAPI (respaldo no oficial)"
     portal = "Fotocasa"
     host = "fotocasa3.p.rapidapi.com"
-    search_paths = ("/search", "/properties/search", "/properties/list", "/listings")
+    # Rutas reales de su documentacion. Las anteriores eran suposiciones y
+    # devolvian 404 todas: /searchads es la busqueda, no /search.
+    search_paths = ("/searchads", "/property-search", "/search")
+    # Endpoint de salud propio: comprobar con el no gasta cuota de busqueda.
+    health_path = "/health"
     docs_url = "https://rapidapi.com/happyendpoint/api/fotocasa3"
 
     def build_params(self, lat: float, lon: float, radius_km: float, **filters: Any) -> dict[str, Any]:
@@ -498,6 +525,34 @@ def _resolve_separator(text: str, separator: str) -> str:
     if head.lstrip("-").isdigit() and tail.isdigit() and len(tail) == 3:
         return head + tail
     return text.replace(separator, ".")
+
+
+# Cada comprobacion contra RapidAPI cuesta una peticion del plan contratado, y
+# el panel sondea todas las fuentes en cada carga. Sin cache, unas pocas
+# visitas al dia agotarian un plan gratuito de 500 al mes solo comprobando.
+CHECK_CACHE_SECONDS = 900
+_check_cache: dict[str, tuple[float, SourceStatus]] = {}
+
+
+def _cached_status(key: str) -> SourceStatus | None:
+    entry = _check_cache.get(key)
+    if entry is None:
+        return None
+    stored_at, status = entry
+    if time.time() - stored_at > CHECK_CACHE_SECONDS:
+        _check_cache.pop(key, None)
+        return None
+    return status
+
+
+def _store_status(key: str, status: SourceStatus) -> SourceStatus:
+    _check_cache[key] = (time.time(), status)
+    return status
+
+
+def clear_check_cache() -> None:
+    """Fuerza una comprobacion nueva. La usa el endpoint de diagnostico."""
+    _check_cache.clear()
 
 
 def iter_rapidapi_sources() -> Iterable[RapidApiSource]:
