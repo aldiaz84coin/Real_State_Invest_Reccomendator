@@ -34,8 +34,7 @@ class InsideAirbnbSource(BaseSource):
 
     def discover_spain_datasets(self) -> list[dict[str, str]]:
         """Localiza los volcados disponibles para ciudades espanolas."""
-        with self.client() as client:
-            response = client.get(self.settings.insideairbnb_url)
+        response = self.request("GET", self.settings.insideairbnb_url)
         if response.status_code != 200:
             raise SourceError(f"InsideAirbnb HTTP {response.status_code}")
 
@@ -52,8 +51,7 @@ class InsideAirbnbSource(BaseSource):
 
     def fetch_listings(self, url: str) -> list[dict[str, Any]]:
         """Descarga y parsea un CSV de anuncios (soporta .gz)."""
-        with self.client() as client:
-            response = client.get(url)
+        response = self.request("GET", url)
         if response.status_code != 200:
             raise SourceError(f"InsideAirbnb HTTP {response.status_code} en {url}")
 

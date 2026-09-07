@@ -30,8 +30,7 @@ class IneSource(BaseSource):
     def series_table(self, table_id: str = INE_IPV_TABLE, last_n: int = 20) -> list[dict[str, Any]]:
         """Descarga los ultimos `last_n` periodos de una tabla del INE."""
         url = f"{self.settings.ine_base_url}/DATOS_TABLA/{table_id}"
-        with self.client() as client:
-            response = client.get(url, params={"nult": last_n})
+        response = self.request("GET", url, params={"nult": last_n})
         if response.status_code != 200:
             raise SourceError(f"INE Tempus3 HTTP {response.status_code}")
         return response.json()

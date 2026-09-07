@@ -31,8 +31,7 @@ class CatastroSource(BaseSource):
         """Devuelve la referencia catastral de la parcela que contiene el punto."""
         url = f"{self.settings.catastro_ovc_url}/ovcservweb/OVCSWLocalizacionRC/OVCCoordenadas.asmx/Consulta_RCCOOR"
         params = {"SRS": "EPSG:4326", "Coordenada_X": f"{lon}", "Coordenada_Y": f"{lat}"}
-        with self.client() as client:
-            response = client.get(url, params=params)
+        response = self.request("GET", url, params=params)
         if response.status_code != 200:
             raise SourceError(f"Catastro Consulta_RCCOOR HTTP {response.status_code}")
 
@@ -59,8 +58,7 @@ class CatastroSource(BaseSource):
             "refcat": cadastral_ref,
             "srsname": "EPSG::4326",
         }
-        with self.client() as client:
-            response = client.get(url, params=params)
+        response = self.request("GET", url, params=params)
         if response.status_code != 200:
             raise SourceError(f"Catastro WFS HTTP {response.status_code}")
         return self.parse_parcel_gml(response.text, cadastral_ref)

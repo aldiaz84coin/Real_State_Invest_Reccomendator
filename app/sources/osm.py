@@ -49,8 +49,7 @@ class OverpassSource(BaseSource):
             return []
 
         query = f"[out:json][timeout:60];({''.join(blocks)});out center tags;"
-        with self.client() as client:
-            response = client.post(self.settings.overpass_url, data={"data": query})
+        response = self.request("POST", self.settings.overpass_url, data={"data": query})
         if response.status_code != 200:
             raise SourceError(f"Overpass HTTP {response.status_code}")
 
@@ -109,11 +108,11 @@ class NominatimSource(BaseSource):
     licence = "ODbL. Maximo 1 peticion/segundo segun su politica de uso."
 
     def geocode(self, query: str) -> dict[str, Any] | None:
-        with self.client() as client:
-            response = client.get(
-                f"{self.settings.nominatim_url}/search",
-                params={"q": query, "format": "jsonv2", "limit": 1, "countrycodes": "es"},
-            )
+        response = self.request(
+            "GET",
+            f"{self.settings.nominatim_url}/search",
+            params={"q": query, "format": "jsonv2", "limit": 1, "countrycodes": "es"},
+        )
         if response.status_code != 200:
             raise SourceError(f"Nominatim HTTP {response.status_code}")
         results = response.json()
