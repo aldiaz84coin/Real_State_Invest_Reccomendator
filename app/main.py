@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
@@ -25,7 +25,8 @@ from app.schemas import (
     SimulationRequest,
 )
 from app.services import analyze_listing, run_full_simulation
-from app.simulation.catalog import list_models
+from app.simulation.catalog import CATALOG, get_model, list_models
+from app.simulation.render_model import render_model_card_svg
 from app.simulation.costs import CostAssumptions
 from app.simulation.siteplan import SitePlanOptions
 from app.sources.base import SourceError
@@ -107,6 +108,28 @@ def sources_health(db: Session = Depends(get_db)) -> dict[str, Any]:
 @app.get("/api/prefab-models", tags=["simulacion"])
 def prefab_models() -> dict[str, Any]:
     return {"models": list_models()}
+
+
+@app.get("/api/prefab-models/{model_id}/preview.svg", tags=["simulacion"])
+def prefab_model_preview(model_id: str) -> Response:
+    """Alzado y planta del modelo, dibujados a escala desde sus dimensiones."""
+    try:
+        model = get_model(model_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+    return Response(
+        content=render_model_card_svg(model),
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+def _model_cards() -> list[dict[str, Any]]:
+    """Catálogo con la ficha ya dibujada, para pintar el selector."""
+    return [
+        {**model.as_dict(), "preview_svg": render_model_card_svg(model)}
+        for model in CATALOG
+    ]
 
 
 # ---------------------------------------------------------------- oportunidades
@@ -288,6 +311,8 @@ def _simulate(request: SimulationRequest, db: Session) -> dict[str, Any]:
         cost_assumptions=costs,
         rental_overrides=overrides,
         site_options=site_options,
+        use_cadastre=request.use_cadastre,
+        use_cadastral_area=request.use_cadastral_area,
     )
 
     if request.save_as:
@@ -693,7 +718,7 @@ def page_simulator(
     listing = db.get(Listing, listing_id) if listing_id else None
     return templates.TemplateResponse(
         "simulator.html",
-        {"request": request, "models": list_models(), "listing": listing, "result": None},
+        {"request": request, "models": _model_cards(), "listing": listing, "result": None},
     )
 
 
@@ -707,7 +732,7 @@ async def page_simulate(request: Request, db: Session = Depends(get_db)) -> HTML
         payload[key] = value
     # Las casillas no marcadas no llegan en el formulario.
     for flag in ("include_pool", "include_terrace", "include_parking",
-                 "seller_is_business", "off_grid"):
+                 "seller_is_business", "off_grid", "use_cadastre", "use_cadastral_area"):
         payload[flag] = flag in form
 
     try:
@@ -716,7 +741,7 @@ async def page_simulate(request: Request, db: Session = Depends(get_db)) -> HTML
     except HTTPException as exc:
         return templates.TemplateResponse(
             "simulator.html",
-            {"request": request, "models": list_models(), "listing": None,
+            {"request": request, "models": _model_cards(), "listing": None,
              "result": None, "error": exc.detail},
             status_code=exc.status_code,
         )
@@ -724,7 +749,7 @@ async def page_simulate(request: Request, db: Session = Depends(get_db)) -> HTML
     listing = db.get(Listing, simulation_request.listing_id) if simulation_request.listing_id else None
     return templates.TemplateResponse(
         "simulator.html",
-        {"request": request, "models": list_models(), "listing": listing,
+        {"request": request, "models": _model_cards(), "listing": listing,
          "result": result, "form": payload},
     )
 

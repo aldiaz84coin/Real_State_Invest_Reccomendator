@@ -136,7 +136,28 @@ La ocupación se estima por dos vías independientes —noches inferidas de las
 reseñas y hueco cerrado del calendario— y se toma **la menor**, que es la
 prudente.
 
-### Simulación 2D y 3D
+### Simulación visual
+
+**Selector de modelos como fichas.** Cada vivienda se muestra con un esquema
+**dibujado a escala a partir de sus dimensiones reales** —alzado acotado y planta
+con el reparto de salón, baños y dormitorios—, junto a superficie, dimensiones,
+acabado, aislamiento, garantía, plazo de entrega y desglose del precio del módulo.
+No son fotos de catálogo: para decidir entre modelos, ver la proporción real y el
+reparto interior dice más que una foto, y cada ficha enlaza su referencia comercial.
+
+**Parcela real del Catastro.** El simulador consulta el Catastro con las
+coordenadas y trae el polígono real de la parcela, con su referencia catastral y
+su superficie oficial. Eso cambia la simulación por completo: los retranqueos y
+el sitio donde cabe la casa dependen de la forma de la parcela, no de un
+rectángulo equivalente. Si el Catastro no responde o no hay parcela en ese punto,
+se dibuja el rectángulo y **se dice por qué**. La superficie oficial puede además
+sustituir a la tecleada, porque es la que usarán notaría, registro y el ITP.
+
+**Cuatro vistas del resultado**: plano acotado en SVG, vista 3D orbitable,
+la implantación sobre el mapa (parcela, área edificable, casa, terraza, piscina y
+aparcamiento georreferenciados) y la ficha del modelo elegido.
+
+### Motor de implantación 2D y 3D
 Con la geometría real de la parcela (Catastro) y las dimensiones del modelo:
 aplica retranqueos, calcula el área edificable y busca la mejor colocación
 —maximizando holgura a linderos, orientación sur y cercanía al acceso—; sitúa
