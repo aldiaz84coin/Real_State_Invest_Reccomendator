@@ -31,10 +31,23 @@ Además de lo anterior, la app admite proveedores de **RapidAPI** como respaldo:
 
 | Portal | Proveedor | Cubre |
 |---|---|---|
-| Idealista | `oneapiproject/idealista-api1` | Alternativa si no tienes clave oficial o se agota la cuota |
+| Idealista | `happyendpoint/idealista17` | **Preferido.** Idealista Data API; plan gratuito de 500 peticiones/mes |
+| Idealista | `oneapiproject/idealista-api1` | Segunda alternativa |
 | Fotocasa | `happyendpoint/fotocasa3` | **El hueco que no se puede cubrir por vía oficial** |
 
 Para `pisos.com` y `habitaclia` no se encontró ningún proveedor en RapidAPI.
+
+**Claves.** RapidAPI entrega una clave por aplicación y lo habitual es crear una
+por API suscrita, así que hay dos niveles: `RAPIDAPI_KEY` como respaldo común y
+`RAPIDAPI_KEYS` para dar una clave propia a cada fuente
+(`rapidapi_idealista17=...,rapidapi_fotocasa=...`).
+
+**Coordenadas.** La búsqueda de estos proveedores **no siempre devuelve latitud
+y longitud** — la de `idealista17` no lo hace. Exigirlas dejaría el resultado
+vacío sin explicar por qué, así que el anuncio se conserva y se sitúa en su
+municipio, usando los datos que ya están en la base y sin gastar cuota. Queda
+marcado como aproximado, la ingesta informa de cuántos se resolvieron así, y la
+ficha avisa de que sus distancias a playa o montaña son orientativas.
 
 > **Estas APIs no son oficiales.** Son revendedores que extraen los datos de los
 > portales, cuyas condiciones de uso prohíben la extracción automatizada. Se

@@ -352,9 +352,29 @@ def api_ingest_listings(
         )
 
     created = updated = 0
+    coords_from_municipality = coords_from_search_center = 0
+
     for item in items:
         if not item["external_id"] or item["price_eur"] <= 0 or item["area_m2"] <= 0:
             continue
+
+        # Algunos proveedores no devuelven coordenadas en la busqueda. Antes de
+        # renunciar al anuncio se le asigna la posicion del municipio, que ya
+        # esta en la base y no cuesta ninguna peticion. Queda marcado para que
+        # el analisis sepa que las distancias son aproximadas.
+        precision = item.pop("coords_precision", "exact")
+        if item.get("lat") is None or item.get("lon") is None:
+            resolved = _resolve_missing_coords(db, item)
+            if resolved is None:
+                item["lat"], item["lon"] = request.lat, request.lon
+                precision = "search_center"
+                coords_from_search_center += 1
+            else:
+                item["lat"], item["lon"] = resolved
+                precision = "municipality"
+                coords_from_municipality += 1
+        if isinstance(item.get("raw"), dict):
+            item["raw"]["coords_precision"] = precision
         existing = db.execute(
             select(Listing).where(
                 Listing.source == item["source"], Listing.external_id == item["external_id"]
@@ -383,6 +403,18 @@ def api_ingest_listings(
         "updated": updated,
         "source_used": used,
         "fallbacks_tried": attempts,
+        "coords": {
+            "from_municipality": coords_from_municipality,
+            "from_search_center": coords_from_search_center,
+            "note": (
+                "Los anuncios sin coordenadas propias se sitúan en el municipio "
+                "(o en el centro de búsqueda si no se reconoce). Sus distancias "
+                "a playa o montaña son aproximadas."
+            ) if (coords_from_municipality or coords_from_search_center) else "",
+        },
+        "discarded": getattr(
+            next((p for p in providers if p.key == used), None), "discarded", {}
+        ),
     }
 
 
@@ -700,6 +732,17 @@ async def page_simulate(request: Request, db: Session = Depends(get_db)) -> HTML
 @app.exception_handler(SourceError)
 async def source_error_handler(_request: Request, exc: SourceError) -> JSONResponse:
     return JSONResponse(status_code=502, content={"ok": False, "message": str(exc)})
+
+
+def _resolve_missing_coords(db: Session, item: dict[str, Any]) -> tuple[float, float] | None:
+    """Coordenadas del municipio del anuncio, si se reconoce por nombre."""
+    name = (item.get("municipality_name") or "").strip()
+    if not name:
+        return None
+    found = db.execute(
+        select(Municipality).where(Municipality.name.ilike(name))
+    ).scalars().first()
+    return (found.lat, found.lon) if found else None
 
 
 def _match_municipality(
