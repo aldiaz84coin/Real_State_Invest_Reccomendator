@@ -956,3 +956,86 @@ class TestBusquedaEnProfundidad:
         from app.sources.rapidapi import _find_key
 
         assert _find_key({"a": 1}, "combinedlocations") is None
+
+
+class TestPreparacionDeParametros:
+    """El diagnóstico en producción envió /searchads sin combinedLocations y su
+    validador respondió 400 «Required». La causa: el probe y el sondeo llamaban
+    a build_params, saltándose la resolución de zona que hace prepare_params.
+    Estos tests fijan que ambos recorran el mismo camino que la búsqueda real."""
+
+    @staticmethod
+    def _fotocasa(monkeypatch):
+        from app.config import get_settings
+        from app.sources.rapidapi import RapidApiFotocasaSource, clear_check_cache
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "clave")
+        get_settings.cache_clear()
+        clear_check_cache()
+        return RapidApiFotocasaSource()
+
+    def test_prepare_params_incluye_el_identificador_de_zona(self, monkeypatch):
+        from app.config import get_settings
+
+        source = self._fotocasa(monkeypatch)
+        try:
+            monkeypatch.setattr(
+                "app.sources.osm.NominatimSource.reverse",
+                lambda self, lat, lon: {"municipality": "Málaga", "province": "Málaga"},
+            )
+            monkeypatch.setattr(
+                httpx.Client, "request",
+                lambda self, method, url, **kw: httpx.Response(
+                    200, json={"combinedLocations": "724,14,29,0,0,29067,0,0,0"},
+                    request=httpx.Request(method, url),
+                ),
+            )
+            params = source.prepare_params(36.7213, -4.4214, 15.0, page=1)
+            # Es el parámetro que su API declara obligatorio.
+            assert params["combinedLocations"] == "724,14,29,0,0,29067,0,0,0"
+        finally:
+            get_settings.cache_clear()
+
+    def test_build_params_solo_no_lo_incluye(self, monkeypatch):
+        """Documenta la diferencia: por eso llamar a build_params daba 400."""
+        source = self._fotocasa(monkeypatch)
+        assert "combinedLocations" not in source.build_params(36.72, -4.42, 15.0, page=1)
+
+    def test_el_sondeo_pasa_por_prepare_params(self, monkeypatch):
+        from app.config import get_settings
+        from app.sources.rapidapi import RapidApiIdealista17Source, clear_check_cache
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "clave")
+        get_settings.cache_clear()
+        clear_check_cache()
+        try:
+            source = RapidApiIdealista17Source()
+            llamadas = {"prepare": 0}
+            original = source.prepare_params
+
+            def espia(*args, **kwargs):
+                llamadas["prepare"] += 1
+                return original(*args, **kwargs)
+
+            monkeypatch.setattr(source, "prepare_params", espia)
+            monkeypatch.setattr(
+                httpx.Client, "request",
+                lambda self, method, url, **kw: httpx.Response(
+                    200, json={"elementList": [{"price": 1, "size": 1}]},
+                    request=httpx.Request(method, url),
+                ),
+            )
+            source.check()
+            assert llamadas["prepare"] == 1
+        finally:
+            get_settings.cache_clear()
+
+    def test_el_probe_pasa_por_prepare_params(self, monkeypatch):
+        """El endpoint de diagnóstico debe recorrer lo mismo que la búsqueda,
+        o comprobaría algo que en realidad nunca ocurre."""
+        import inspect
+        from app import main
+
+        fuente = inspect.getsource(main.api_probe_rapidapi)
+        assert "prepare_params" in fuente
+        assert "provider.build_params" not in fuente
