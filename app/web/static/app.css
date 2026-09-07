@@ -134,3 +134,33 @@ ul.clean li:last-child { border-bottom: 0; }
 .section { margin-bottom: 26px; }
 .muted { color: var(--text-dim); }
 .mono { font-variant-numeric: tabular-nums; }
+
+/* --- Selector de modelos como fichas ------------------------------------ */
+.model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.model-card {
+  position: relative; border: 2px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); overflow: hidden; cursor: pointer; transition: border-color .15s, box-shadow .15s;
+  display: flex; flex-direction: column;
+}
+.model-card:hover { border-color: var(--accent); }
+.model-card input { position: absolute; opacity: 0; pointer-events: none; }
+.model-card:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.model-card:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.model-card .preview { background: var(--surface-2); padding: 6px; border-bottom: 1px solid var(--border); }
+.model-card .preview svg { display: block; }
+.model-card .body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.model-card h4 { margin: 0; font-size: .95rem; line-height: 1.3; }
+.model-card .specs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px 10px; font-size: .8rem; }
+.model-card .specs span { color: var(--text-dim); }
+.model-card .specs b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.model-card .price {
+  margin-top: auto; padding-top: 8px; border-top: 1px dashed var(--border);
+  display: flex; justify-content: space-between; align-items: baseline; font-size: .85rem;
+}
+.model-card .price strong { font-size: 1.08rem; }
+.model-card .tag {
+  position: absolute; top: 8px; right: 8px; background: var(--accent); color: #fff;
+  font-size: .68rem; font-weight: 700; padding: 3px 8px; border-radius: 999px;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.model-card .notes { font-size: .78rem; color: var(--text-dim); line-height: 1.4; }

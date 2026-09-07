@@ -15,6 +15,10 @@ class SimulationRequest(BaseModel):
     lat: float | None = Field(default=None, ge=-90, le=90)
     lon: float | None = Field(default=None, ge=-180, le=180)
     model_id: str = "plegable-40-2dorm"
+    # Trae el polígono real de la parcela desde el Catastro en vez de dibujar
+    # un rectángulo equivalente. Cambia por completo la implantación.
+    use_cadastre: bool = True
+    use_cadastral_area: bool = True   # usar también su superficie oficial
 
     # Costes
     ccaa: str = "Andalucia"

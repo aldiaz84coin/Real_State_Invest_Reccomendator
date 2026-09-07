@@ -18,7 +18,10 @@ from app.simulation.business_plan import RentalAssumptions, build_business_plan
 from app.simulation.catalog import get_model
 from app.simulation.costs import CostAssumptions, compute_investment
 from app.simulation.render2d import render_site_plan_svg
+from app.simulation.render_model import render_model_card_svg
 from app.simulation.siteplan import SitePlanOptions, build_site_plan, synthetic_parcel
+from app.sources.base import SourceError
+from app.sources.catastro import CatastroSource
 
 # Ocupacion y tarifa de respaldo cuando no hay dato real para la zona.
 # Son deliberadamente conservadoras: es peor sobreestimar un negocio que
@@ -216,23 +219,49 @@ def run_full_simulation(
     rental_overrides: dict[str, Any] | None = None,
     site_options: SitePlanOptions | None = None,
     parcel_geojson: dict[str, Any] | None = None,
+    use_cadastre: bool = True,
+    use_cadastral_area: bool = True,
 ) -> dict[str, Any]:
     """Ejecuta la simulacion completa: costes, implantacion y plan de negocio."""
     model = get_model(model_id)
 
-    investment = compute_investment(
-        land_price_eur=land_price_eur,
-        parcel_area_m2=parcel_area_m2,
-        model=model,
-        assumptions=cost_assumptions,
-    )
-
     # --- implantacion sobre la parcela real -------------------------------
     ring = None
     approximate_parcel = False
+    cadastre: dict[str, Any] = {"attempted": False, "found": False}
     geojson = parcel_geojson or (listing.parcel_geojson if listing else None)
     if geojson:
         ring = _extract_ring(geojson)
+
+    # Sin geometría guardada se pide al Catastro la parcela que contiene el
+    # punto. Es lo que convierte la simulación en algo real: la forma de la
+    # parcela determina dónde cabe la casa y cuánto retranqueo queda.
+    if not ring and use_cadastre:
+        cadastre["attempted"] = True
+        try:
+            feature = CatastroSource().parcel_at(lat, lon)
+        except SourceError as exc:
+            cadastre["error"] = str(exc)[:200]
+        except Exception as exc:  # una caída del Catastro no debe tumbar la simulación
+            cadastre["error"] = f"{type(exc).__name__}: {exc}"[:200]
+        else:
+            if feature:
+                ring = _extract_ring(feature)
+                if ring:
+                    properties = feature.get("properties", {})
+                    cadastre.update(
+                        found=True,
+                        cadastral_ref=properties.get("cadastral_ref"),
+                        official_area_m2=properties.get("official_area_m2"),
+                    )
+                    geojson = feature
+                    official = properties.get("official_area_m2")
+                    if use_cadastral_area and official and official > 0:
+                        # La superficie oficial manda sobre la tecleada: es la
+                        # que usará notaría, registro y el cálculo del ITP.
+                        cadastre["area_replaced_from"] = parcel_area_m2
+                        parcel_area_m2 = float(official)
+
     if not ring:
         ring = synthetic_parcel(parcel_area_m2, lat, lon)
         approximate_parcel = True
@@ -241,14 +270,38 @@ def run_full_simulation(
         parcel_ring_lonlat=ring, model=model, options=site_options or SitePlanOptions()
     )
     if approximate_parcel:
+        motivo = (
+            "El Catastro no devolvió parcela para esas coordenadas"
+            if cadastre.get("attempted") and not cadastre.get("error")
+            else cadastre.get("error", "no se consultó el Catastro")
+        )
         site_plan.warnings.insert(
             0,
-            "No hay geometria catastral para esta parcela: se dibuja un rectangulo "
-            "equivalente a su superficie. La forma real puede cambiar la implantacion.",
+            f"Sin geometría catastral ({motivo}): se dibuja un rectángulo equivalente "
+            "a la superficie indicada. La forma real puede cambiar la implantación.",
         )
+    elif cadastre.get("found"):
+        detalle = f"referencia {cadastre.get('cadastral_ref')}"
+        if cadastre.get("area_replaced_from"):
+            detalle += (
+                f"; se usa su superficie oficial de {parcel_area_m2:.0f} m² en lugar "
+                f"de los {cadastre['area_replaced_from']:.0f} m² indicados"
+            )
+        site_plan.warnings.insert(0, f"Parcela real del Catastro ({detalle}).")
     site_plan_dict = site_plan.as_dict()
     site_plan_dict["approximate"] = approximate_parcel
+    site_plan_dict["cadastre"] = cadastre
+    site_plan_dict["parcel_geojson"] = geojson
     site_plan_dict["svg"] = render_site_plan_svg(site_plan_dict)
+
+    # La inversión se calcula después de resolver la parcela: si el Catastro
+    # devuelve una superficie oficial distinta, es esa la que debe usarse.
+    investment = compute_investment(
+        land_price_eur=land_price_eur,
+        parcel_area_m2=parcel_area_m2,
+        model=model,
+        assumptions=cost_assumptions,
+    )
 
     # --- plan de negocio con datos reales de la zona ------------------------
     municipality = listing.municipality if listing else None
@@ -290,7 +343,7 @@ def run_full_simulation(
         )
 
     return {
-        "model": model.as_dict(),
+        "model": {**model.as_dict(), "preview_svg": render_model_card_svg(model, 460, 265)},
         "investment": investment.as_dict(),
         "business_plan": plan.as_dict(),
         "site_plan": site_plan_dict,

@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% set active = 'sim' %}
 {% block title %}Simulador de inversión{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+{% endblock %}
 {% block content %}
 <h1>Simulador de inversión</h1>
 <p class="note">Coste total de compra e instalación, implantación sobre la parcela y plan de negocio del alquiler turístico.</p>
@@ -37,20 +40,58 @@
         <input type="checkbox" id="sib" name="seller_is_business" {{ 'checked' if form and form.seller_is_business }}>
         <label for="sib">Vendedor empresa (IVA + AJD)</label>
       </div>
+      <div class="check">
+        <input type="checkbox" id="uc" name="use_cadastre" {{ 'checked' if not form or form.use_cadastre }}>
+        <label for="uc">Cargar parcela real del Catastro</label>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="uca" name="use_cadastral_area" {{ 'checked' if not form or form.use_cadastral_area }}>
+        <label for="uca">Usar su superficie oficial</label>
+      </div>
     </div>
+    <p class="note" style="margin-top:8px">
+      Con la parcela del Catastro la implantación se calcula sobre su forma real:
+      los retranqueos y dónde cabe la casa cambian por completo frente a un rectángulo.
+    </p>
 
     <h3 style="margin-top:22px">Vivienda prefabricada</h3>
+    <p class="note" style="margin-top:-4px">
+      Esquemas dibujados a escala con las dimensiones reales de cada modelo, no fotos de catálogo.
+    </p>
+    {% set seleccionado = form.model_id if form else 'plegable-40-2dorm' %}
+    <div class="model-grid" style="margin-bottom:18px">
+      {% for m in models %}
+      <label class="model-card">
+        <input type="radio" name="model_id" value="{{ m.id }}" {{ 'checked' if seleccionado == m.id }}>
+        {% if loop.first %}<span class="tag">referencia</span>{% endif %}
+        <div class="preview">{{ m.preview_svg | safe }}</div>
+        <div class="body">
+          <h4>{{ m.name }}</h4>
+          <div class="specs">
+            <span>Superficie</span><b>{{ m.area_m2 }} m²</b>
+            <span>Dimensiones</span><b>{{ m.length_m }} × {{ m.width_m }} m</b>
+            <span>Dormitorios</span><b>{{ m.bedrooms }}</b>
+            <span>Baños</span><b>{{ m.bathrooms }}</b>
+            <span>Acabado</span><b>{{ m.finish_level }}</b>
+            <span>Garantía</span><b>{{ m.warranty_years }} años</b>
+            <span>Aislamiento</span><b style="font-size:.76rem">{{ m.insulation }}</b>
+            <span>Entrega</span><b>{{ m.lead_time_weeks }} sem</b>
+          </div>
+          {% if m.notes %}<p class="notes">{{ m.notes }}</p>{% endif %}
+          <div class="price">
+            <span class="muted">Módulo montado</span>
+            <span><strong>{{ m.turnkey_module_eur | euro }}</strong>
+              <span class="muted">· {{ m.price_per_m2 | euro }}/m²</span></span>
+          </div>
+          {% if m.reference_url %}
+          <a class="note" href="{{ m.reference_url }}" target="_blank" rel="noopener"
+             onclick="event.stopPropagation()">Ver referencia comercial ↗</a>
+          {% endif %}
+        </div>
+      </label>
+      {% endfor %}
+    </div>
     <div class="filters">
-      <div style="grid-column: span 2">
-        <label>Modelo</label>
-        <select name="model_id" id="model_id">
-          {% for m in models %}
-            <option value="{{ m.id }}" {{ 'selected' if (form.model_id if form else 'plegable-40-2dorm') == m.id }}>
-              {{ m.name }} — {{ m.area_m2 }} m², {{ m.bedrooms }} dorm · módulo {{ '{:,.0f}'.format(m.turnkey_module_eur) }} €
-            </option>
-          {% endfor %}
-        </select>
-      </div>
       <div class="check"><input type="checkbox" id="pool" name="include_pool" {{ 'checked' if form and form.include_pool }}><label for="pool">Con piscina</label></div>
       <div><label>Coste piscina (€)</label><input type="number" name="pool_eur" step="500" value="{{ form.pool_eur if form else 22000 }}"></div>
       <div class="check"><input type="checkbox" id="og" name="off_grid" {{ 'checked' if form and form.off_grid }}><label for="og">Sin red eléctrica (solar)</label></div>
@@ -110,12 +151,54 @@
 
   {% for w in sp.warnings %}<div class="alert warn">{{ w }}</div>{% endfor %}
 
+  {% set cat = sp.cadastre or {} %}
+  <div class="alert {{ 'info' if cat.found else 'warn' }}" style="margin-bottom:12px">
+    {% if cat.found %}
+      <strong>Parcela real del Catastro.</strong>
+      Referencia <code>{{ cat.cadastral_ref }}</code>
+      {%- if cat.official_area_m2 %}, superficie oficial {{ cat.official_area_m2 }} m²{% endif %}.
+      La implantación está calculada sobre su forma real.
+    {% else %}
+      <strong>Parcela aproximada.</strong>
+      {% if cat.error %}El Catastro no respondió ({{ cat.error }}).
+      {% elif cat.attempted %}El Catastro no devuelve parcela en esas coordenadas.
+      {% else %}No se consultó el Catastro.{% endif %}
+      Se dibuja un rectángulo equivalente a la superficie indicada.
+    {% endif %}
+  </div>
+
   <div class="tabs">
     <button type="button" class="active" data-view="view2d">Plano 2D</button>
     <button type="button" data-view="view3d">Vista 3D</button>
+    <button type="button" data-view="viewmap">Sobre el mapa</button>
+    <button type="button" data-view="viewmodel">Modelo elegido</button>
   </div>
 
   <div id="view2d">{{ sp.svg | safe }}</div>
+  <div id="viewmap" hidden><div id="map" style="height:460px"></div></div>
+  <div id="viewmodel" hidden>
+    <div class="grid cols-2">
+      <div>{{ result.model.preview_svg | safe }}</div>
+      <div>
+        <h3>{{ result.model.name }}</h3>
+        <table>
+          <tr><td>Superficie</td><td class="num">{{ result.model.area_m2 }} m²</td></tr>
+          <tr><td>Dimensiones</td><td class="num">{{ result.model.length_m }} × {{ result.model.width_m }} × {{ result.model.height_m }} m</td></tr>
+          <tr><td>Dormitorios / baños</td><td class="num">{{ result.model.bedrooms }} / {{ result.model.bathrooms }}</td></tr>
+          <tr><td>Acabado</td><td class="num">{{ result.model.finish_level }}</td></tr>
+          <tr><td>Aislamiento</td><td class="num">{{ result.model.insulation }}</td></tr>
+          <tr><td>Garantía</td><td class="num">{{ result.model.warranty_years }} años</td></tr>
+          <tr><td>Plazo de entrega</td><td class="num">{{ result.model.lead_time_weeks }} semanas</td></tr>
+          <tr><td>Módulo en fábrica</td><td class="num">{{ result.model.base_price_eur | euro }}</td></tr>
+          <tr><td>Transporte</td><td class="num">{{ result.model.transport_eur | euro }}</td></tr>
+          <tr><td>Montaje</td><td class="num">{{ result.model.assembly_eur | euro }}</td></tr>
+          {% if result.model.needs_crane %}<tr><td>Grúa</td><td class="num">{{ result.model.crane_eur | euro }}</td></tr>{% endif %}
+          <tr><td><strong>Módulo montado</strong></td><td class="num"><strong>{{ result.model.turnkey_module_eur | euro }}</strong></td></tr>
+        </table>
+        {% if result.model.notes %}<p class="note">{{ result.model.notes }}</p>{% endif %}
+      </div>
+    </div>
+  </div>
   <div id="view3d" hidden>
     <div class="viewer-wrap">
       <div id="viewer3d"></div>
@@ -220,27 +303,76 @@
 
 {% block scripts %}
 {% if result %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="/static/viewer3d.js"></script>
 <script>
   const sitePlan = {{ result.site_plan | tojson_safe | safe }};
   let viewerStarted = false;
 
+  const vistas = ['view2d', 'view3d', 'viewmap', 'viewmodel'];
+  let mapStarted = false;
+
   document.querySelectorAll('.tabs button').forEach(function (button) {
     button.addEventListener('click', function () {
       document.querySelectorAll('.tabs button').forEach(function (b) { b.classList.remove('active'); });
       button.classList.add('active');
       const target = button.dataset.view;
-      document.getElementById('view2d').hidden = target !== 'view2d';
-      document.getElementById('view3d').hidden = target !== 'view3d';
-      // La escena 3D se construye al abrir la pestaña: montarla oculta daría
-      // un lienzo de ancho cero y un encuadre roto.
+      vistas.forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.hidden = id !== target;
+      });
+
+      // Tanto la escena 3D como el mapa se montan al abrir su pestaña:
+      // construirlos ocultos da un lienzo de ancho cero y un encuadre roto.
       if (target === 'view3d' && !viewerStarted) {
         viewerStarted = true;
         window.initSiteViewer3D('viewer3d', sitePlan);
       }
+      if (target === 'viewmap' && !mapStarted) {
+        mapStarted = true;
+        montarMapa();
+      }
     });
   });
+
+  function montarMapa() {
+    const parcela = sitePlan.parcel && sitePlan.parcel.lonlat;
+    if (!parcela || !parcela.length) return;
+    const centro = [sitePlan.origin.lat, sitePlan.origin.lon];
+    const map = L.map('map').setView(centro, 18);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 20, attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    // Leaflet trabaja en lat/lon y la escena viaja en lon/lat, como GeoJSON.
+    const aLatLng = function (anillo) {
+      return anillo.map(function (p) { return [p[1], p[0]]; });
+    };
+
+    const capas = [];
+    capas.push(L.polygon(aLatLng(parcela), {
+      color: '#2f6f4f', weight: 2.5, fillOpacity: 0.10
+    }).bindTooltip('Parcela · ' + sitePlan.metrics.parcel_area_m2 + ' m²').addTo(map));
+
+    if (sitePlan.buildable && sitePlan.buildable.lonlat.length) {
+      L.polygon(aLatLng(sitePlan.buildable.lonlat), {
+        color: '#7aa632', weight: 1.5, dashArray: '6 4', fillOpacity: 0.06
+      }).bindTooltip('Área edificable tras retranqueos').addTo(map);
+    }
+    [['house', '#c9793f', 'Vivienda'], ['terrace', '#b99a68', 'Terraza'],
+     ['pool', '#3f8db3', 'Piscina'], ['parking', '#9aa0a6', 'Aparcamiento']]
+      .forEach(function (item) {
+        const elemento = sitePlan[item[0]];
+        if (elemento && elemento.lonlat && elemento.lonlat.length) {
+          capas.push(L.polygon(aLatLng(elemento.lonlat), {
+            color: item[1], weight: 2, fillOpacity: 0.55
+          }).bindTooltip(item[2]).addTo(map));
+        }
+      });
+
+    map.fitBounds(L.featureGroup(capas).getBounds().pad(0.25));
+  }
 </script>
 {% endif %}
 {% endblock %}

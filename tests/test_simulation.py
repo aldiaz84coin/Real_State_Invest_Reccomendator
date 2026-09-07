@@ -267,3 +267,82 @@ class TestSitePlan:
     def test_svg_sin_geometria_no_revienta(self):
         svg = render_site_plan_svg({"parcel": {"meters": []}})
         assert "Sin geometria" in svg
+
+
+class TestFichaDeModelo:
+    """La ficha se dibuja a escala desde las dimensiones reales del catálogo,
+    no es una foto: debe ser correcta para todos los modelos."""
+
+    def test_todos_los_modelos_generan_svg_valido(self):
+        from app.simulation.render_model import render_model_card_svg
+
+        for model in CATALOG:
+            svg = render_model_card_svg(model)
+            assert svg.startswith("<svg") and svg.endswith("</svg>")
+            assert "viewBox" in svg
+            assert 'role="img"' in svg and "aria-label" in svg   # accesible
+
+    def test_la_ficha_acota_las_dimensiones_reales(self):
+        from app.simulation.render_model import render_model_card_svg
+
+        model = get_model("plegable-40-2dorm")
+        svg = render_model_card_svg(model)
+        assert f"{model.length_m:g} m" in svg
+        assert f"{model.width_m:g} m" in svg
+        assert f"{model.height_m:g} m" in svg
+
+    def test_la_planta_refleja_dormitorios_y_banos(self):
+        from app.simulation.render_model import render_model_card_svg
+
+        una = render_model_card_svg(get_model("plegable-20-1dorm"))
+        tres = render_model_card_svg(get_model("modular-90"))
+        # Un modelo de 3 dormitorios dibuja más habitaciones que uno de 1.
+        assert tres.count(">dorm<") > una.count(">dorm<")
+        assert "2 baños" in tres
+        assert "1 baño<" in una
+
+    def test_modelo_desconocido_no_rompe_el_catalogo(self):
+        with pytest.raises(ValueError):
+            get_model("no-existe")
+
+
+class TestParcelaCatastral:
+    """La simulación debe seguir funcionando con y sin Catastro."""
+
+    def test_sin_catastro_usa_rectangulo_equivalente(self, monkeypatch):
+        from app.simulation.siteplan import synthetic_parcel
+        from app.analysis.geo import polygon_area, LocalProjection
+
+        ring = synthetic_parcel(900, 36.72, -4.42)
+        projection = LocalProjection(36.72, -4.42)
+        metros = projection.ring_to_meters(ring[:-1])
+        assert polygon_area(metros) == pytest.approx(900, rel=0.02)
+
+    def test_el_geojson_del_catastro_se_convierte_a_anillo(self):
+        from app.services import _extract_ring
+
+        feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[-4.42, 36.72], [-4.419, 36.72],
+                                 [-4.419, 36.721], [-4.42, 36.721], [-4.42, 36.72]]],
+            },
+            "properties": {"cadastral_ref": "ABC", "official_area_m2": 1000.0},
+        }
+        ring = _extract_ring(feature)
+        assert ring is not None and len(ring) == 5
+        assert ring[0] == [-4.42, 36.72]
+
+    def test_multipolygon_tambien_se_acepta(self):
+        from app.services import _extract_ring
+
+        feature = {"geometry": {"type": "MultiPolygon", "coordinates": [[[
+            [-4.42, 36.72], [-4.419, 36.72], [-4.419, 36.721], [-4.42, 36.72]]]]}}
+        assert _extract_ring(feature) is not None
+
+    def test_geometria_invalida_devuelve_none(self):
+        from app.services import _extract_ring
+
+        assert _extract_ring({}) is None
+        assert _extract_ring({"geometry": {"type": "Point", "coordinates": [0, 0]}}) is None
