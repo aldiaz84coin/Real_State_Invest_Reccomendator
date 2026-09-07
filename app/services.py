@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.analysis.geo import haversine_km
 from app.analysis.market import Comparable, compare_to_market
 from app.analysis.poi import PoiRef, analyze_location
@@ -322,6 +323,8 @@ def run_full_simulation(
         if field_name in overrides and overrides[field_name] is not None:
             setattr(rental, field_name, type(getattr(rental, field_name))(overrides[field_name]))
 
+    model_image_url = _resolve_model_image(model.id)
+
     plan = build_business_plan(
         investment_eur=investment.total_eur,
         area_m2=model.area_m2,
@@ -343,7 +346,11 @@ def run_full_simulation(
         )
 
     return {
-        "model": {**model.as_dict(), "preview_svg": render_model_card_svg(model, 460, 265)},
+        "model": {
+            **model.as_dict(),
+            "preview_svg": render_model_card_svg(model, 460, 265),
+            "image_url": model_image_url,
+        },
         "investment": investment.as_dict(),
         "business_plan": plan.as_dict(),
         "site_plan": site_plan_dict,

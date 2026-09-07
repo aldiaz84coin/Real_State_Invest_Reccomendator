@@ -56,7 +56,9 @@
 
     <h3 style="margin-top:22px">Vivienda prefabricada</h3>
     <p class="note" style="margin-top:-4px">
-      Esquemas dibujados a escala con las dimensiones reales de cada modelo, no fotos de catálogo.
+      Los esquemas están dibujados a escala con las dimensiones reales de cada modelo.
+      Puedes añadir la foto real de cualquiera subiéndola a
+      <code>POST /api/prefab-models/&lt;modelo&gt;/image</code>; el esquema sigue disponible debajo.
     </p>
     {% set seleccionado = form.model_id if form else 'plegable-40-2dorm' %}
     <div class="model-grid" style="margin-bottom:18px">
@@ -64,7 +66,17 @@
       <label class="model-card">
         <input type="radio" name="model_id" value="{{ m.id }}" {{ 'checked' if seleccionado == m.id }}>
         {% if loop.first %}<span class="tag">referencia</span>{% endif %}
-        <div class="preview">{{ m.preview_svg | safe }}</div>
+        <div class="preview">
+          {% if m.image_url %}
+            <img class="model-photo" src="{{ m.image_url }}" alt="Foto de {{ m.name }}" loading="lazy">
+            <details class="model-schema">
+              <summary>Ver esquema a escala</summary>
+              {{ m.preview_svg | safe }}
+            </details>
+          {% else %}
+            {{ m.preview_svg | safe }}
+          {% endif %}
+        </div>
         <div class="body">
           <h4>{{ m.name }}</h4>
           <div class="specs">
@@ -178,7 +190,18 @@
   <div id="viewmap" hidden><div id="map" style="height:460px"></div></div>
   <div id="viewmodel" hidden>
     <div class="grid cols-2">
-      <div>{{ result.model.preview_svg | safe }}</div>
+      <div>
+        {% if result.model.image_url %}
+          <img class="model-photo" src="{{ result.model.image_url }}"
+               alt="Foto de {{ result.model.name }}" style="margin-bottom:12px">
+        {% endif %}
+        {{ result.model.preview_svg | safe }}
+        <p class="note">
+          {% if result.model.image_url %}Foto aportada y esquema a escala.
+          {% else %}Esquema a escala. Sube una foto real con
+            <code>POST /api/prefab-models/{{ result.model.id }}/image</code>.{% endif %}
+        </p>
+      </div>
       <div>
         <h3>{{ result.model.name }}</h3>
         <table>

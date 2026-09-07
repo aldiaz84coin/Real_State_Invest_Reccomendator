@@ -346,3 +346,77 @@ class TestParcelaCatastral:
 
         assert _extract_ring({}) is None
         assert _extract_ring({"geometry": {"type": "Point", "coordinates": [0, 0]}}) is None
+
+
+class TestFotoDeModelo:
+    """Las fotos las aporta el usuario: no se pueden descargar en este entorno
+    y son material del fabricante. La app las acepta y las guarda en el
+    volumen, para poder añadirlas sin volver a desplegar."""
+
+    @pytest.fixture
+    def carpeta(self, tmp_path, monkeypatch):
+        from app.config import get_settings
+
+        monkeypatch.setenv("MODEL_IMAGES_DIR", str(tmp_path))
+        get_settings.cache_clear()
+        yield tmp_path
+        get_settings.cache_clear()
+
+    def test_sin_foto_solo_hay_esquema(self, carpeta):
+        from app.simulation.catalog import image_path_for
+
+        assert image_path_for("plegable-40-2dorm") is None
+
+    def test_encuentra_la_foto_subida(self, carpeta):
+        from app.simulation.catalog import image_path_for
+
+        (carpeta / "plegable-40-2dorm.jpg").write_bytes(b"datos")
+        assert image_path_for("plegable-40-2dorm") == carpeta / "plegable-40-2dorm.jpg"
+
+    def test_prefiere_webp_a_jpg(self, carpeta):
+        from app.simulation.catalog import image_path_for
+
+        (carpeta / "modular-60.jpg").write_bytes(b"a")
+        (carpeta / "modular-60.webp").write_bytes(b"b")
+        assert image_path_for("modular-60").suffix == ".webp"
+
+    def test_una_url_configurada_tiene_prioridad(self, carpeta, monkeypatch):
+        from app.config import get_settings
+
+        monkeypatch.setenv("PREFAB_IMAGES", "modular-90=https://ejemplo/foto.jpg")
+        get_settings.cache_clear()
+        (carpeta / "modular-90.jpg").write_bytes(b"local")
+        from app.main import _model_image_url
+
+        assert _model_image_url("modular-90") == "https://ejemplo/foto.jpg"
+
+    def test_sin_url_se_sirve_la_subida(self, carpeta, monkeypatch):
+        from app.config import get_settings
+
+        monkeypatch.delenv("PREFAB_IMAGES", raising=False)
+        get_settings.cache_clear()
+        (carpeta / "modular-90.jpg").write_bytes(b"local")
+        from app.main import _model_image_url
+
+        assert _model_image_url("modular-90") == "/api/prefab-models/modular-90/image"
+
+    def test_solo_se_admiten_formatos_de_imagen_web(self):
+        """Nada de SVG, que puede llevar scripts, ni tipos arbitrarios."""
+        from app.main import ALLOWED_IMAGE_TYPES
+
+        assert set(ALLOWED_IMAGE_TYPES) == {"image/webp", "image/jpeg", "image/png"}
+        assert "image/svg+xml" not in ALLOWED_IMAGE_TYPES
+
+    def test_el_catalogo_expone_la_foto_cuando_existe(self, carpeta, monkeypatch):
+        from app.config import get_settings
+
+        monkeypatch.delenv("PREFAB_IMAGES", raising=False)
+        get_settings.cache_clear()
+        (carpeta / "plegable-20-1dorm.png").write_bytes(b"x")
+        from app.main import _model_cards
+
+        tarjetas = {m["id"]: m for m in _model_cards()}
+        assert tarjetas["plegable-20-1dorm"]["image_url"].endswith("/image")
+        assert tarjetas["modular-60"]["image_url"] is None
+        # El esquema sigue estando en ambos casos.
+        assert all(m["preview_svg"].startswith("<svg") for m in tarjetas.values())

@@ -12,6 +12,9 @@ primary_region = 'ams'
 [env]
   APP_ENV = 'production'
   DATABASE_URL = 'sqlite:////data/investment.db'
+  # Las fotos de los modelos viven en el volumen, no en la imagen: así se
+  # pueden subir sin redesplegar y sobreviven a cada despliegue.
+  MODEL_IMAGES_DIR = '/data/model_images'
 
 # El volumen debe crearse en la misma region que primary_region, o el
 # despliegue falla al montarlo:

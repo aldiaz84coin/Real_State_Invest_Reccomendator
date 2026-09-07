@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     contact_email: str = "contacto@ejemplo.com"
     user_agent: str = "RealStateInvestRecommendator/1.0"
 
+    # --- Fotos reales de los modelos prefabricados ----------------------
+    # Se guardan en el volumen, no en la imagen, para poder anadirlas sin
+    # redesplegar. PREFAB_IMAGES permite ademas apuntar a una URL externa
+    # cuando se tienen derechos sobre ella.
+    model_images_dir: str = "data/model_images"
+    prefab_images: str = ""   # "modelo=https://...,modelo=https://..."
+    max_image_bytes: int = 6 * 1024 * 1024
+
     http_timeout: float = 30.0
     cache_ttl_seconds: int = 60 * 60 * 12
 
@@ -61,6 +69,9 @@ class Settings(BaseSettings):
     def rapidapi_key_for(self, source_key: str) -> str:
         """Clave especifica de esa API, o la global si no hay una propia."""
         return _parse_overrides(self.rapidapi_keys).get(source_key) or self.rapidapi_key
+
+    def prefab_image_url(self, model_id: str) -> str | None:
+        return _parse_overrides(self.prefab_images).get(model_id)
 
     def rapidapi_host_for(self, source_key: str) -> str | None:
         return _parse_overrides(self.rapidapi_hosts).get(source_key)
