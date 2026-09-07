@@ -1,0 +1,91 @@
+name: Desplegar en Fly
+
+# Los runners de GitHub Actions sí tienen salida libre hacia Fly, así que este
+# workflow es la vía de despliegue del proyecto.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:        # permite lanzarlo a mano desde la pestaña Actions
+
+concurrency:
+  # Dos despliegues simultáneos sobre la misma app se pisan: se encola el
+  # último y se cancela el anterior si aún no ha terminado.
+  group: fly-deploy
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Ejecutar tests
+        run: pytest -q
+
+      - name: Comprobar que la app arranca
+        # Levantar el servidor de verdad detecta errores de importación y de
+        # plantillas que los tests unitarios no ven.
+        env:
+          DATABASE_URL: sqlite:///./ci.db
+        run: |
+          uvicorn app.main:app --port 8000 &
+          for i in $(seq 1 20); do
+            if curl -sf localhost:8000/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf localhost:8000/health
+          curl -sf -o /dev/null localhost:8000/
+          curl -sf -o /dev/null localhost:8000/simular
+
+  deploy:
+    name: Desplegar
+    needs: test
+    runs-on: ubuntu-latest
+    # Sin el secreto configurado el despliegue se salta en vez de fallar, para
+    # que el repositorio siga en verde mientras no haya cuenta de Fly.
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Comprobar que existe el token
+        id: check
+        run: |
+          if [ -z "${{ secrets.FLY_API_TOKEN }}" ]; then
+            echo "listo=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Falta el secreto FLY_API_TOKEN; se omite el despliegue."
+          else
+            echo "listo=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.check.outputs.listo == 'true'
+
+      - name: Desplegar
+        if: steps.check.outputs.listo == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only
+
+      - name: Comprobar acceso a las fuentes ya desplegado
+        if: steps.check.outputs.listo == 'true'
+        run: |
+          APP=$(grep -m1 '^app' fly.toml | cut -d'"' -f2)
+          echo "Sondeando https://$APP.fly.dev/api/sources/health"
+          # Reintentos porque la máquina puede estar arrancando en frío.
+          curl -sf --retry 8 --retry-delay 5 --retry-all-errors \
+            "https://$APP.fly.dev/api/sources/health" -o fuentes.json
+          jq -r '.summary | "Operativas: \(.ok)/\(.total) | falta clave: \(.needs_credentials) | sin via publica: \(.unavailable)"' fuentes.json
+          jq -r '.sources[] | "  \(.access | .[0:18]) \(.name)"' fuentes.json
+          echo "### Fuentes de datos" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.sources[] | "- **\(.name)**: \(.access)"' fuentes.json >> "$GITHUB_STEP_SUMMARY"

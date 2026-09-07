@@ -119,15 +119,19 @@ Abre <http://localhost:8000>. La documentación interactiva de la API está en `
 
 ### Fly.io
 
+La app ya está declarada en `fly.toml` como `real-state-invest-reccomendator`
+en la región `ams`, tal y como la generó `fly launch`. El volumen **debe crearse
+en esa misma región** o el despliegue falla al montarlo.
+
 ```bash
-fly launch --no-deploy                       # usa el fly.toml del repositorio
-fly volumes create investment_data --region mad --size 1
+fly auth login
+fly volumes create investment_data --region ams --size 1
 fly secrets set CONTACT_EMAIL="tu@email.com"
 fly secrets set IDEALISTA_API_KEY="..." IDEALISTA_API_SECRET="..."   # opcional
 fly deploy
 
 # Comprueba el acceso real a las fuentes, ya con salida a internet sin restricciones
-curl https://<tu-app>.fly.dev/api/sources/health | jq .summary
+curl https://real-state-invest-reccomendator.fly.dev/api/sources/health | jq .summary
 
 # Carga inicial de datos
 fly ssh console -C "python -m scripts.seed municipios"
@@ -135,8 +139,32 @@ fly ssh console -C "python -m scripts.seed pois"
 fly ssh console -C "python -m scripts.seed alquiler"
 ```
 
-**La base de datos es gratuita**: SQLite en un volumen de Fly, sin servidor
-aparte. La máquina se suspende sin tráfico y arranca con la primera petición.
+#### Despliegue automático desde GitHub Actions
+
+El repositorio incluye `.github/workflows/deploy.yml`: pasa los tests, comprueba
+que la app arranca y despliega en Fly en cada push a `main`. Para activarlo basta
+con crear el token una vez y guardarlo como secreto del repositorio:
+
+```bash
+fly tokens create deploy      # copia el valor
+# GitHub -> Settings -> Secrets and variables -> Actions -> New secret
+#   Nombre: FLY_API_TOKEN
+```
+
+Sin ese secreto el workflow no falla: ejecuta los tests y **omite** el despliegue
+con un aviso, de modo que el repositorio sigue en verde mientras no haya cuenta
+de Fly. Tras cada despliegue correcto sondea `/api/sources/health` y publica el
+estado de cada fuente en el resumen de la ejecución.
+
+La app y el volumen hay que crearlos una sola vez a mano (los comandos de arriba);
+Actions se encarga de los despliegues posteriores.
+
+**La base de datos no necesita servidor aparte**: SQLite sobre un volumen de
+Fly. La máquina se suspende sin tráfico y arranca con la primera petición, así
+que su coste tiende a cero, pero **el volumen se factura siempre** (del orden de
+0,15 $/GB al mes) esté la app parada o no. Gratuito es no pagar un Postgres
+gestionado, no que el despliegue salga a cero.
+
 Si algún día necesitas Postgres o Supabase, basta con cambiar `DATABASE_URL`:
 el código va contra SQLAlchemy y no asume el motor.
 

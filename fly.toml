@@ -1,42 +1,44 @@
-# Configuracion de despliegue en Fly.io
-app = "real-state-invest-recommendator"
-primary_region = "mad"
+# fly.toml app configuration file generated for real-state-invest-reccomendator on 2026-09-07T12:36:23Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'real-state-invest-reccomendator'
+primary_region = 'ams'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  APP_ENV = "production"
-  DATABASE_URL = "sqlite:////data/investment.db"
+  APP_ENV = 'production'
+  DATABASE_URL = 'sqlite:////data/investment.db'
 
-# Volumen persistente: es lo que hace que la base de datos sea gratuita.
-# Se crea una vez con:
-#   fly volumes create investment_data --region mad --size 1
+# El volumen debe crearse en la misma region que primary_region, o el
+# despliegue falla al montarlo:
+#   fly volumes create investment_data --region ams --size 1
 [[mounts]]
-  source = "investment_data"
-  destination = "/data"
+  source = 'investment_data'
+  destination = '/data'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "suspend"
+  auto_stop_machines = 'suspend'
   auto_start_machines = true
-  # Se para sola cuando no hay trafico y arranca con la primera peticion,
-  # que es lo que mantiene el coste practicamente en cero.
   min_machines_running = 0
 
   [http_service.concurrency]
-    type = "requests"
-    soft_limit = 40
+    type = 'requests'
     hard_limit = 80
+    soft_limit = 40
 
   [[http_service.checks]]
-    grace_period = "10s"
-    interval = "30s"
-    method = "GET"
-    timeout = "5s"
-    path = "/health"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+  size = 'shared-cpu-1x'
+  memory = '512mb'
