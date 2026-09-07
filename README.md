@@ -156,8 +156,20 @@ con un aviso, de modo que el repositorio sigue en verde mientras no haya cuenta
 de Fly. Tras cada despliegue correcto sondea `/api/sources/health` y publica el
 estado de cada fuente en el resumen de la ejecución.
 
-La app y el volumen hay que crearlos una sola vez a mano (los comandos de arriba);
-Actions se encarga de los despliegues posteriores.
+El workflow deja la app entera en pie, sin `flyctl` en tu máquina:
+
+1. **Crea el volumen si no existe**, en la región que diga `primary_region`.
+   Como el `fly.toml` declara `[[mounts]]`, sin volumen el despliegue aborta.
+2. **Despliega.**
+3. **Asigna IP pública si falta** (IPv6 y IPv4 compartida). Este paso importa
+   más de lo que parece: sin IP asignada Fly no publica `<app>.fly.dev` y el
+   dominio da `NXDOMAIN` aunque el despliegue haya terminado bien. Desplegar con
+   `--image` sobre una app existente no las asigna automáticamente. Se pide la
+   IPv4 **compartida** a propósito, porque la dedicada se factura aparte.
+
+Los tres pasos comprueban antes de actuar, así que se pueden repetir sin
+duplicar volúmenes ni IPs. Lo único que hay que crear a mano una vez es la
+propia app (`fly launch` desde la web de Fly).
 
 **La base de datos no necesita servidor aparte**: SQLite sobre un volumen de
 Fly. La máquina se suspende sin tráfico y arranca con la primera petición, así

@@ -71,16 +71,66 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
         if: steps.check.outputs.listo == 'true'
 
+      - name: Leer nombre y región del fly.toml
+        id: cfg
+        run: |
+          # Se extrae el valor entre comillas: fly launch reescribe el fichero
+          # con comillas simples y un borrado de caracteres se comería letras
+          # del propio nombre de la app.
+          APP=$(sed -n "s/^app *= *['\"]\\(.*\\)['\"].*/\\1/p" fly.toml)
+          REGION=$(sed -n "s/^primary_region *= *['\"]\\(.*\\)['\"].*/\\1/p" fly.toml)
+          test -n "$APP" || { echo "::error::No se pudo leer 'app' de fly.toml"; exit 1; }
+          test -n "$REGION" || { echo "::error::No se pudo leer 'primary_region' de fly.toml"; exit 1; }
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          echo "region=$REGION" >> "$GITHUB_OUTPUT"
+          echo "App: $APP | Región: $REGION"
+
+      - name: Crear el volumen si no existe
+        if: steps.check.outputs.listo == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          APP: ${{ steps.cfg.outputs.app }}
+          REGION: ${{ steps.cfg.outputs.region }}
+        run: |
+          # El fly.toml declara [[mounts]], así que sin volumen el despliegue
+          # aborta. Se comprueba antes de crear para no acabar con dos.
+          if flyctl volumes list -a "$APP" --json | jq -e '.[] | select(.name == "investment_data")' > /dev/null; then
+            echo "El volumen investment_data ya existe."
+          else
+            echo "Creando volumen investment_data en $REGION"
+            flyctl volumes create investment_data -a "$APP" --region "$REGION" --size 1 --yes
+          fi
+
       - name: Desplegar
         if: steps.check.outputs.listo == 'true'
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl deploy --remote-only
 
+      - name: Asignar IP pública si falta
+        if: steps.check.outputs.listo == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          APP: ${{ steps.cfg.outputs.app }}
+        run: |
+          # Sin IP asignada Fly no publica <app>.fly.dev y el dominio da
+          # NXDOMAIN aunque el despliegue haya ido bien. Desplegar con
+          # --image sobre una app existente no las asigna solo.
+          if [ "$(flyctl ips list -a "$APP" --json | jq 'length')" -gt 0 ]; then
+            echo "La app ya tiene IP asignada."
+          else
+            echo "Sin IP: asignando IPv6 y IPv4 compartida."
+            flyctl ips allocate-v6 -a "$APP"
+            # Compartida a propósito: la IPv4 dedicada se factura aparte.
+            flyctl ips allocate-v4 --shared -a "$APP"
+          fi
+          flyctl ips list -a "$APP"
+
       - name: Comprobar acceso a las fuentes ya desplegado
         if: steps.check.outputs.listo == 'true'
+        env:
+          APP: ${{ steps.cfg.outputs.app }}
         run: |
-          APP=$(grep -m1 '^app' fly.toml | cut -d'"' -f2)
           echo "Sondeando https://$APP.fly.dev/api/sources/health"
           # Reintentos porque la máquina puede estar arrancando en frío.
           curl -sf --retry 8 --retry-delay 5 --retry-all-errors \
