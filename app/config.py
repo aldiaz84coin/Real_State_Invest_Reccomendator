@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     airroi_api_key: str = ""
     airroi_base_url: str = "https://api.airroi.com"
 
+    # --- Respaldo NO oficial via RapidAPI -------------------------------
+    # Revendedores que extraen datos de los portales. Quedan fuera del criterio
+    # de "solo vias oficiales" y por eso van desactivados mientras no haya
+    # clave. Host y ruta son configurables porque cada proveedor los cambia sin
+    # aviso y no deben requerir tocar codigo.
+    rapidapi_key: str = ""
+    rapidapi_hosts: str = ""   # "clave=host,clave=host"
+    rapidapi_paths: str = ""   # "clave=/ruta,clave=/ruta"
+
     # Fuentes publicas abiertas: no requieren credenciales.
     catastro_ovc_url: str = "https://ovc.catastro.meh.es"
     catastro_inspire_url: str = "https://ovc.catastro.meh.es/INSPIRE"
@@ -41,6 +50,29 @@ class Settings(BaseSettings):
     @property
     def idealista_configured(self) -> bool:
         return bool(self.idealista_api_key and self.idealista_api_secret)
+
+    @property
+    def rapidapi_configured(self) -> bool:
+        return bool(self.rapidapi_key)
+
+    def rapidapi_host_for(self, source_key: str) -> str | None:
+        return _parse_overrides(self.rapidapi_hosts).get(source_key)
+
+    def rapidapi_path_for(self, source_key: str) -> str | None:
+        return _parse_overrides(self.rapidapi_paths).get(source_key)
+
+
+def _parse_overrides(raw: str) -> dict[str, str]:
+    """Lee "clave=valor,clave=valor" y descarta lo que no encaje."""
+    overrides: dict[str, str] = {}
+    for chunk in (raw or "").split(","):
+        if "=" not in chunk:
+            continue
+        key, _, value = chunk.partition("=")
+        key, value = key.strip(), value.strip()
+        if key and value:
+            overrides[key] = value
+    return overrides
 
 
 @lru_cache

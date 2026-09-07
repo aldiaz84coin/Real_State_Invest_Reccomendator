@@ -25,6 +25,40 @@ Esta fue la primera comprobación del proyecto y condiciona todo lo demás.
 | **AirROI** | Sí, de pago | Complemento opcional de pago por uso. |
 | **AirDNA** | Descartado | Su API sólo se comercializa con contrato *enterprise* (del orden de 50.000 $/año). |
 
+### Respaldo no oficial vía RapidAPI
+
+Además de lo anterior, la app admite proveedores de **RapidAPI** como respaldo:
+
+| Portal | Proveedor | Cubre |
+|---|---|---|
+| Idealista | `oneapiproject/idealista-api1` | Alternativa si no tienes clave oficial o se agota la cuota |
+| Fotocasa | `happyendpoint/fotocasa3` | **El hueco que no se puede cubrir por vía oficial** |
+
+Para `pisos.com` y `habitaclia` no se encontró ningún proveedor en RapidAPI.
+
+> **Estas APIs no son oficiales.** Son revendedores que extraen los datos de los
+> portales, cuyas condiciones de uso prohíben la extracción automatizada. Se
+> integran como respaldo explícito porque es una decisión consciente, no por
+> descuido: van **desactivadas mientras no haya `RAPIDAPI_KEY`**, y la API
+> oficial de Idealista siempre tiene prioridad cuando está configurada.
+> Además se rompen cuando el portal cambia su web, por eso host, ruta y mapeo
+> de campos son configurables sin tocar código.
+
+El orden de la cadena es: **oficial primero, respaldo después**. La respuesta de
+`/api/ingest/listings` dice en `source_used` cuál acabó sirviendo los datos y en
+`fallbacks_tried` por qué fallaron los anteriores.
+
+Como el esquema de estos proveedores no está documentado de forma fiable, hay un
+endpoint de diagnóstico que lo comprueba contra datos reales:
+
+```bash
+curl "https://<tu-app>.fly.dev/api/sources/rapidapi/probe?source=rapidapi_idealista" | jq
+```
+
+Devuelve el estado HTTP, las claves de la respuesta, cuántos anuncios se
+localizaron y cómo quedó el primero tras el mapeo, además de una pista sobre qué
+ajustar. Nunca expone la clave.
+
 **La app se limita a vías oficiales.** No hace scraping de ningún portal. El
 hueco que dejan Fotocasa y pisos.com se cubre con Idealista (anuncios) más
 Catastro e INE (geometría y precios oficiales), y queda documentado en la
