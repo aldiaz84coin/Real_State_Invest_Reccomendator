@@ -125,6 +125,34 @@ class NominatimSource(BaseSource):
             "display_name": top.get("display_name", ""),
         }
 
+    def reverse(self, lat: float, lon: float) -> dict[str, Any] | None:
+        """Municipio y provincia de un punto. Gratis y sin cuota.
+
+        Lo usan los proveedores que buscan por nombre de zona en vez de por
+        coordenadas, para no pedirle al usuario algo que ya se deduce del punto.
+        """
+        response = self.request(
+            "GET",
+            f"{self.settings.nominatim_url}/reverse",
+            params={"lat": lat, "lon": lon, "format": "jsonv2", "zoom": 10,
+                    "addressdetails": 1},
+        )
+        if response.status_code != 200:
+            raise SourceError(f"Nominatim reverse HTTP {response.status_code}")
+        payload = response.json()
+        address = payload.get("address", {})
+        municipality = (
+            address.get("city") or address.get("town") or address.get("village")
+            or address.get("municipality") or address.get("county")
+        )
+        if not municipality:
+            return None
+        return {
+            "municipality": municipality,
+            "province": address.get("province") or address.get("state", ""),
+            "display_name": payload.get("display_name", ""),
+        }
+
     def check(self) -> SourceStatus:
         return self._timed_probe(
             f"{self.settings.nominatim_url}/search",

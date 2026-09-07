@@ -792,3 +792,167 @@ class TestCuotaDeRapidApi:
 
         # /searchads, no /search: las cuatro rutas anteriores daban 404.
         assert RapidApiFotocasaSource().search_paths[0] == "/searchads"
+
+
+class TestFotocasaApiReal:
+    """Contrastado con la documentación del proveedor. Su API busca por zona,
+    no por radio, así que la búsqueda son dos pasos."""
+
+    @staticmethod
+    def _source(monkeypatch):
+        from app.config import get_settings
+        from app.sources.rapidapi import RapidApiFotocasaSource, clear_check_cache
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "clave")
+        get_settings.cache_clear()
+        clear_check_cache()
+        return RapidApiFotocasaSource()
+
+    def test_los_parametros_son_los_documentados(self, monkeypatch):
+        source = self._source(monkeypatch)
+        params = source.build_params(
+            40.4096, -3.68624, 15, page=2,
+            combined_locations="724,14,28,173,0,28079,0,0,0",
+            min_size_m2=300, max_size_m2=5000, max_price=90000,
+        )
+        # Nombres exactos de su documentación, no los genéricos de antes.
+        assert params["transactionType"] == "BUY"
+        assert params["propertyType"] == "LAND"       # terrenos
+        assert params["pageNumber"] == 2
+        assert params["combinedLocations"] == "724,14,28,173,0,28079,0,0,0"
+        assert params["minSurface"] == 300
+        assert params["maxSurface"] == 5000
+        assert params["maxPrice"] == 90000
+        assert "publicationDate" in params            # figura como requerido
+        # Los que enviaba antes ya no existen en su API.
+        assert "operation" not in params and "distance" not in params
+
+    def test_busca_en_searchads(self, monkeypatch):
+        assert self._source(monkeypatch).search_paths == ("/searchads",)
+
+    def test_resuelve_la_zona_por_suggestions(self, monkeypatch):
+        from app.config import get_settings
+
+        source = self._source(monkeypatch)
+        try:
+            vistos: list[str] = []
+
+            def fake(self, method, url, **kw):
+                vistos.append(url)
+                return httpx.Response(
+                    200,
+                    json={"suggestions": [
+                        {"name": "Madrid",
+                         "combinedLocations": "724,14,28,173,0,28079,0,0,0"}
+                    ]},
+                    request=httpx.Request(method, url),
+                )
+
+            monkeypatch.setattr(httpx.Client, "request", fake)
+            combined = source.resolve_location(40.4, -3.7, query="madrid")
+            assert combined == "724,14,28,173,0,28079,0,0,0"
+            assert vistos[0].endswith("/suggestions")
+        finally:
+            get_settings.cache_clear()
+
+    def test_la_zona_resuelta_se_cachea(self, monkeypatch):
+        from app.config import get_settings
+
+        source = self._source(monkeypatch)
+        try:
+            llamadas = {"n": 0}
+
+            def fake(self, method, url, **kw):
+                llamadas["n"] += 1
+                return httpx.Response(
+                    200, json={"combinedLocations": "1,2,3"},
+                    request=httpx.Request(method, url),
+                )
+
+            monkeypatch.setattr(httpx.Client, "request", fake)
+            source.resolve_location(40.4, -3.7, query="madrid")
+            source.resolve_location(40.4, -3.7, query="madrid")
+            assert llamadas["n"] == 1   # no repite la llamada por cada página
+        finally:
+            get_settings.cache_clear()
+
+    def test_avisa_si_suggestions_no_trae_el_identificador(self, monkeypatch):
+        from app.config import get_settings
+        from app.sources.base import SourceError
+
+        source = self._source(monkeypatch)
+        try:
+            monkeypatch.setattr(
+                httpx.Client, "request",
+                lambda self, method, url, **kw: httpx.Response(
+                    200, json={"suggestions": []}, request=httpx.Request(method, url)
+                ),
+            )
+            with pytest.raises(SourceError, match="combinedLocations"):
+                source.resolve_location(40.4, -3.7, query="madrid")
+        finally:
+            get_settings.cache_clear()
+
+    def test_deduce_el_municipio_del_punto(self, monkeypatch):
+        """No se le pide al usuario algo que ya está en las coordenadas."""
+        from app.config import get_settings
+
+        source = self._source(monkeypatch)
+        try:
+            monkeypatch.setattr(
+                "app.sources.osm.NominatimSource.reverse",
+                lambda self, lat, lon: {"municipality": "Marbella", "province": "Málaga"},
+            )
+            consultas: list[str] = []
+
+            def fake(self, method, url, **kw):
+                consultas.append(kw.get("params", {}).get("query", ""))
+                return httpx.Response(
+                    200, json={"combinedLocations": "ZONA-MARBELLA"},
+                    request=httpx.Request(method, url),
+                )
+
+            monkeypatch.setattr(httpx.Client, "request", fake)
+            params = source.prepare_params(36.51, -4.88, 15, page=1)
+            assert params["combinedLocations"] == "ZONA-MARBELLA"
+            assert consultas == ["Marbella"]
+        finally:
+            get_settings.cache_clear()
+
+    def test_avisa_si_no_se_puede_determinar_el_municipio(self, monkeypatch):
+        from app.config import get_settings
+        from app.sources.base import SourceError
+
+        source = self._source(monkeypatch)
+        try:
+            monkeypatch.setattr(
+                "app.sources.osm.NominatimSource.reverse",
+                lambda self, lat, lon: None,
+            )
+            with pytest.raises(SourceError, match="municipio"):
+                source.resolve_location(0.0, 0.0)
+        finally:
+            get_settings.cache_clear()
+
+
+class TestBusquedaEnProfundidad:
+    def test_encuentra_la_clave_este_donde_este(self):
+        from app.sources.rapidapi import _find_key
+
+        assert _find_key({"a": {"b": [{"combinedLocations": "X"}]}}, "combinedlocations") == "X"
+
+    def test_ignora_mayusculas(self):
+        from app.sources.rapidapi import _find_key
+
+        assert _find_key({"CombinedLocations": "Y"}, "combinedlocations") == "Y"
+
+    def test_ignora_valores_vacios(self):
+        from app.sources.rapidapi import _find_key
+
+        assert _find_key({"combinedLocations": "", "x": {"combinedLocations": "Z"}},
+                         "combinedlocations") == "Z"
+
+    def test_devuelve_none_si_no_esta(self):
+        from app.sources.rapidapi import _find_key
+
+        assert _find_key({"a": 1}, "combinedlocations") is None
