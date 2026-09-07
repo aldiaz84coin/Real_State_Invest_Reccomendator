@@ -473,11 +473,30 @@ def api_probe_rapidapi(
     try:
         params = provider.prepare_params(lat, lon, radius_km, page=1)
     except Exception as exc:
-        raise HTTPException(
-            502,
-            f"No se pudieron preparar los parámetros de {provider.name}: "
-            f"{type(exc).__name__}: {exc}",
-        ) from None
+        # No se lanza un error a secas: se devuelve lo que se sabe, incluida la
+        # respuesta cruda de la resolución de zona cuando el proveedor la usa,
+        # porque si no el diagnóstico no diagnostica nada.
+        diagnosis: dict[str, Any] = {
+            "source": provider.key,
+            "host": provider.host,
+            "stage": "preparacion de parametros",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        if hasattr(provider, "suggestions_raw"):
+            diagnosis["hint"] = (
+                "Este proveedor resuelve la zona antes de buscar. Abajo va la "
+                "respuesta cruda de esa llamada."
+            )
+            try:
+                from app.sources.osm import NominatimSource
+
+                place = NominatimSource().reverse(lat, lon)
+                municipio = place["municipality"] if place else "Malaga"
+                diagnosis["municipality_resolved"] = municipio
+                diagnosis["suggestions_response"] = provider.suggestions_raw(municipio)
+            except Exception as inner:
+                diagnosis["suggestions_error"] = f"{type(inner).__name__}: {inner}"
+        return diagnosis
 
     try:
         response = provider.request(
@@ -533,6 +552,31 @@ def api_probe_rapidapi(
         mapped = sum(1 for v in normalized.values() if v not in (None, "", 0))
         diagnosis["hint"] = f"Mapeo correcto: {mapped} campos con valor."
     return diagnosis
+
+
+@app.get("/api/sources/rapidapi/suggestions", tags=["fuentes"])
+def api_probe_suggestions(
+    query: str = Query(..., description="Municipio o zona a resolver"),
+    source: str = Query("rapidapi_fotocasa"),
+) -> dict[str, Any]:
+    """Devuelve la respuesta cruda de /suggestions de un proveedor.
+
+    Existe porque el diagnóstico anterior era circular: si la resolución de
+    zona falla, el probe de búsqueda falla en ese mismo punto y no llega a
+    enseñar nada. Aquí se ve el cuerpo tal cual para saber cómo llama este
+    proveedor al identificador de zona.
+    """
+    provider = next((p for p in iter_rapidapi_sources() if p.key == source), None)
+    if provider is None or not hasattr(provider, "suggestions_raw"):
+        raise HTTPException(
+            404, f"La fuente '{source}' no tiene búsqueda de zonas."
+        )
+    if not provider.configured:
+        raise HTTPException(422, f"{provider.name} no está configurada: falta la clave.")
+    try:
+        return provider.suggestions_raw(query)
+    except Exception as exc:
+        raise HTTPException(502, f"{type(exc).__name__}: {exc}") from None
 
 
 @app.post("/api/ingest/pois", tags=["ingesta"])
