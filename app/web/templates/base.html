@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Recomendador de Inversión Inmobiliaria{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏡</text></svg>">
+  {% block head %}{% endblock %}
+</head>
+<body>
+<header class="top">
+  <div class="inner">
+    <a class="brand" href="/">Inversión <span>Inmobiliaria</span></a>
+    <nav>
+      <a href="/" class="{{ 'active' if active == 'home' }}">Panel</a>
+      <a href="/buscar" class="{{ 'active' if active == 'search' }}">Localizar inversión</a>
+      <a href="/simular" class="{{ 'active' if active == 'sim' }}">Simulador</a>
+      <a href="/fuentes" class="{{ 'active' if active == 'sources' }}">Fuentes de datos</a>
+      <a href="/docs">API</a>
+    </nav>
+  </div>
+</header>
+<main>
+  {% block content %}{% endblock %}
+</main>
+{% block scripts %}{% endblock %}
+</body>
+</html>

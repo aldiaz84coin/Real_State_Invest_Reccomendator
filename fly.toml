@@ -1,0 +1,42 @@
+# Configuracion de despliegue en Fly.io
+app = "real-state-invest-recommendator"
+primary_region = "mad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  APP_ENV = "production"
+  DATABASE_URL = "sqlite:////data/investment.db"
+
+# Volumen persistente: es lo que hace que la base de datos sea gratuita.
+# Se crea una vez con:
+#   fly volumes create investment_data --region mad --size 1
+[[mounts]]
+  source = "investment_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  # Se para sola cuando no hay trafico y arranca con la primera peticion,
+  # que es lo que mantiene el coste practicamente en cero.
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 40
+    hard_limit = 80
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% set active = 'sources' %}
+{% block title %}Fuentes de datos{% endblock %}
+{% block content %}
+<h1>Fuentes de datos</h1>
+<p class="note" style="max-width:78ch">
+  Comprobación en vivo, hecha desde este servidor. Distingue tres situaciones:
+  la fuente responde y se usa, existe pero necesita una clave tuya, o no hay vía
+  pública de lectura y por eso la app no la consulta.
+</p>
+
+<div class="grid cols-4 section" style="margin-top:18px">
+  <div class="stat good"><div class="label">Operativas</div><div class="value">{{ report.summary.ok }}</div><div class="note">de {{ report.summary.total }}</div></div>
+  <div class="stat warn"><div class="label">Falta clave</div><div class="value">{{ report.summary.needs_credentials }}</div><div class="note">configurables</div></div>
+  <div class="stat"><div class="label">Sin vía pública</div><div class="value">{{ report.summary.unavailable }}</div><div class="note">documentadas abajo</div></div>
+  <div class="stat {{ 'good' if report.summary.required_ok else 'bad' }}">
+    <div class="label">Núcleo</div>
+    <div class="value">{{ 'OK' if report.summary.required_ok else 'KO' }}</div>
+    <div class="note">Catastro · INE · OSM</div>
+  </div>
+</div>
+
+<div class="alert info">{{ report.summary.note }}</div>
+
+<div class="card scroll-x">
+  <table>
+    <thead><tr>
+      <th>Fuente</th><th>Tipo</th><th>Estado</th><th class="num">Latencia</th>
+      <th>Detalle</th><th>Licencia</th>
+    </tr></thead>
+    <tbody>
+    {% for s in report.sources %}
+      <tr>
+        <td>
+          <strong>{{ s.name }}</strong>
+          {% if s.required %}<span class="badge mute">requerida</span>{% endif %}
+          {% if s.docs_url %}<br><a class="note" href="{{ s.docs_url }}" target="_blank" rel="noopener">documentación</a>{% endif %}
+        </td>
+        <td class="note">
+          {% set kinds = {'listings':'Anuncios','cadastre':'Catastro','prices':'Precios','geo':'Geografía','rental':'Alquiler turístico'} %}
+          {{ kinds.get(s.kind, s.kind) }}
+        </td>
+        <td>
+          {% if s.access == 'ok' %}<span class="badge ok">Accesible</span>
+          {% elif s.access == 'needs_credentials' %}<span class="badge warn">Falta clave</span>
+          {% elif s.access == 'unavailable' %}<span class="badge mute">Sin vía pública</span>
+          {% else %}<span class="badge bad">Error</span>{% endif %}
+          {% if s.status_code %}<br><span class="note">HTTP {{ s.status_code }}</span>{% endif %}
+        </td>
+        <td class="num note">{{ s.latency_ms ~ ' ms' if s.latency_ms else '—' }}</td>
+        <td class="note" style="max-width:44ch">{{ s.detail }}</td>
+        <td class="note" style="max-width:26ch">{{ s.licence }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="note" style="margin-top:14px">
+  Respuesta en JSON: <code>GET /api/sources/health</code>
+</p>
+{% endblock %}
