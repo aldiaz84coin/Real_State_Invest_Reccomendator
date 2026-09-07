@@ -119,15 +119,19 @@ Abre <http://localhost:8000>. La documentación interactiva de la API está en `
 
 ### Fly.io
 
+La app ya está declarada en `fly.toml` como `real-state-invest-reccomendator`
+en la región `ams`, tal y como la generó `fly launch`. El volumen **debe crearse
+en esa misma región** o el despliegue falla al montarlo.
+
 ```bash
-fly apps create real-state-invest-recommendator   # si el nombre está cogido, elige otro y cámbialo en fly.toml
-fly volumes create investment_data --region mad --size 1
+fly auth login
+fly volumes create investment_data --region ams --size 1
 fly secrets set CONTACT_EMAIL="tu@email.com"
 fly secrets set IDEALISTA_API_KEY="..." IDEALISTA_API_SECRET="..."   # opcional
 fly deploy
 
 # Comprueba el acceso real a las fuentes, ya con salida a internet sin restricciones
-curl https://<tu-app>.fly.dev/api/sources/health | jq .summary
+curl https://real-state-invest-reccomendator.fly.dev/api/sources/health | jq .summary
 
 # Carga inicial de datos
 fly ssh console -C "python -m scripts.seed municipios"
