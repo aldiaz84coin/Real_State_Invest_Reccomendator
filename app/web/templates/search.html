@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% set active = 'search' %}
+{% block title %}Localizar inversión{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+{% endblock %}
+{% block content %}
+<h1>Localizar inversión</h1>
+<p class="note">Terrenos por debajo del precio de mercado de su zona, con suelo al alza y cerca de playa, montaña o puntos de interés.</p>
+
+<div class="card section" style="margin-top:16px">
+  <form class="filters" method="get">
+    <div><label>Texto</label><input name="q" value="{{ filters.q or '' }}" placeholder="Municipio o dirección"></div>
+    <div>
+      <label>Provincia</label>
+      <select name="province">
+        <option value="">Todas</option>
+        {% for p in provinces %}<option value="{{ p }}" {{ 'selected' if filters.province == p }}>{{ p }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Superficie mínima (m²)</label><input type="number" name="min_area_m2" value="{{ filters.min_area_m2 or 300 }}" min="0" step="50"></div>
+    <div><label>Precio máximo (€)</label><input type="number" name="max_price_eur" value="{{ filters.max_price_eur or '' }}" min="0" step="5000"></div>
+    <div><label>Descuento mínimo (%)</label><input type="number" name="min_discount_pct" value="{{ filters.min_discount_pct }}" min="0" max="95" step="5"></div>
+    <div><label>Playa a menos de (km)</label><input type="number" name="max_beach_km" value="{{ filters.max_beach_km or '' }}" min="0" step="1"></div>
+    <div class="check">
+      <input type="checkbox" id="rt" name="require_rising_trend" value="true" {{ 'checked' if filters.require_rising_trend }}>
+      <label for="rt">Sólo suelo al alza</label>
+    </div>
+    <div><button type="submit">Buscar</button></div>
+  </form>
+</div>
+
+<div class="grid cols-2 section">
+  <div id="map"></div>
+  <div class="card scroll-x" style="max-height:460px; overflow-y:auto">
+    <h3>{{ results|length }} resultado{{ '' if results|length == 1 else 's' }}</h3>
+    {% if results %}
+    <table>
+      <thead><tr><th>Ubicación</th><th class="num">m²</th><th class="num">€/m²</th><th class="num">Desc.</th><th class="num">Nota</th></tr></thead>
+      <tbody>
+      {% for r in results %}
+        <tr onclick="window.location='/oportunidad/{{ r.id }}'" style="cursor:pointer">
+          <td><strong>{{ r.municipality or r.title[:36] }}</strong><br><span class="note">{{ r.province }}{% if r.nearest_poi %} · {{ r.nearest_poi[:26] }}{% endif %}</span></td>
+          <td class="num">{{ '{:,.0f}'.format(r.area_m2) }}</td>
+          <td class="num">{{ '%.0f'|format(r.price_eur_m2) }}</td>
+          <td class="num">{% if r.discount_pct > 0 %}<span class="badge ok">−{{ '%.0f'|format(r.discount_pct) }}%</span>{% else %}—{% endif %}</td>
+          <td class="num"><strong>{{ r.score }}</strong></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="note">Sin resultados con estos filtros. Si la base está vacía, carga datos desde <a href="/fuentes">Fuentes</a> o usa <code>/docs</code>.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+  const results = {{ results | tojson_safe | safe }};
+  const map = L.map('map').setView([40.2, -3.7], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '© OpenStreetMap'
+  }).addTo(map);
+
+  if (results.length) {
+    const group = L.featureGroup();
+    for (const r of results) {
+      // El color separa de un vistazo la ganga real del precio normal.
+      const color = r.discount_pct >= 40 ? '#1f7a4d' : r.discount_pct >= 20 ? '#7aa632' : '#a8621b';
+      L.circleMarker([r.lat, r.lon], {
+        radius: 6 + Math.min(r.score / 14, 7), color, fillColor: color, fillOpacity: .65, weight: 2
+      }).bindPopup(
+        `<strong>${r.municipality || ''}</strong><br>${r.area_m2.toLocaleString('es-ES')} m² · ` +
+        `${r.price_eur.toLocaleString('es-ES')} €<br>${r.price_eur_m2.toFixed(0)} €/m² ` +
+        `(−${r.discount_pct.toFixed(0)}% vs zona)<br>Nota ${r.score}<br>` +
+        `<a href="/oportunidad/${r.id}">Ver ficha</a>`
+      ).addTo(group);
+    }
+    group.addTo(map);
+    map.fitBounds(group.getBounds().pad(0.15));
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% set active = 'search' %}
+{% block title %}{{ listing.municipality_name or listing.title[:40] }}{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+{% endblock %}
+{% block content %}
+<p class="note"><a href="/buscar">← Volver al buscador</a></p>
+<h1>{{ listing.municipality_name or listing.title[:60] }}</h1>
+<p class="note">
+  {{ listing.province }} · {{ listing.address }} ·
+  <a href="{{ listing.url }}" target="_blank" rel="noopener">ver anuncio en {{ listing.source }}</a>
+</p>
+
+<div class="grid cols-4 section" style="margin-top:18px">
+  <div class="stat"><div class="label">Precio</div><div class="value">{{ listing.price_eur | euro }}</div><div class="note">{{ '{:,.0f}'.format(listing.area_m2) }} m²</div></div>
+  <div class="stat"><div class="label">Precio unitario</div><div class="value">{{ '%.0f'|format(listing.price_eur_m2) }} €/m²</div>
+    <div class="note">zona: {{ detail.market.median_eur_m2 or '—' }} €/m²</div></div>
+  <div class="stat {{ 'good' if (detail.market.discount_pct or 0) >= 20 else 'warn' }}">
+    <div class="label">Frente a la zona</div>
+    <div class="value">{% if detail.market.discount_pct is not none %}{{ '%+.0f'|format(-detail.market.discount_pct) }}%{% else %}—{% endif %}</div>
+    <div class="note">{{ detail.market.sample_size }} comparables</div>
+  </div>
+  <div class="stat {{ 'good' if breakdown.total >= 60 else ('warn' if breakdown.total >= 40 else 'bad') }}">
+    <div class="label">Nota global</div><div class="value">{{ breakdown.total }}</div>
+    <div class="note">{{ 'cumple criterios' if breakdown.qualifies else 'no cumple todos' }}</div>
+  </div>
+</div>
+
+<div class="grid cols-2 section">
+  <div class="card">
+    <h2>Desglose de la puntuación</h2>
+    {% for key, label in [('undervaluation','Precio bajo mercado'), ('trend','Tendencia del suelo'), ('location','Emplazamiento'), ('size','Tamaño de parcela')] %}
+      <div style="margin-bottom:13px">
+        <div style="display:flex;justify-content:space-between;font-size:.89rem">
+          <span>{{ label }} <span class="note">(peso {{ (breakdown.weights[key]*100)|round|int }}%)</span></span>
+          <strong class="mono">{{ breakdown.components[key] }}</strong>
+        </div>
+        <div class="bar"><i style="width: {{ breakdown.components[key] }}%"></i></div>
+      </div>
+    {% endfor %}
+
+    {% if breakdown.reasons %}
+      <h3 style="margin-top:20px">A favor</h3>
+      <ul class="clean">{% for r in breakdown.reasons %}<li>✓ {{ r }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if breakdown.warnings %}
+      <h3 style="margin-top:18px">A vigilar</h3>
+      <ul class="clean">{% for w in breakdown.warnings %}<li class="muted">⚠ {{ w }}</li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+
+  <div>
+    <div id="map" style="height:300px"></div>
+    <div class="card" style="margin-top:16px">
+      <h3>Tendencia del suelo</h3>
+      {% set t = detail.trend %}
+      {% if t.cagr_pct is not none %}
+        <table>
+          <tr><td>Crecimiento anual</td><td class="num"><strong>{{ '%+.2f'|format(t.cagr_pct) }}%</strong></td></tr>
+          <tr><td>Últimos 3 años</td><td class="num">{{ '%+.2f'|format(t.recent_cagr_pct) if t.recent_cagr_pct is not none else '—' }}%</td></tr>
+          <tr><td>Consistencia (R²)</td><td class="num">{{ t.r_squared }}</td></tr>
+          <tr><td>Periodo</td><td class="num">{{ t.years_covered }} años</td></tr>
+          <tr><td>Fiabilidad</td><td class="num">{{ t.confidence }}</td></tr>
+        </table>
+      {% else %}
+        <p class="note">Sin serie histórica suficiente para este municipio. Carga datos de precios para afinarlo.</p>
+      {% endif %}
+
+      <h3 style="margin-top:18px">Entorno</h3>
+      {% set l = detail.location %}
+      <table>
+        <tr><td>Playa</td><td class="num">{{ (l.dist_beach_km ~ ' km') if l.dist_beach_km is not none else '—' }}</td></tr>
+        <tr><td>Montaña</td><td class="num">{{ (l.dist_mountain_km ~ ' km') if l.dist_mountain_km is not none else '—' }}</td></tr>
+        <tr><td>Esquí</td><td class="num">{{ (l.dist_ski_km ~ ' km') if l.dist_ski_km is not none else '—' }}</td></tr>
+        <tr><td>Puerto deportivo</td><td class="num">{{ (l.dist_marina_km ~ ' km') if l.dist_marina_km is not none else '—' }}</td></tr>
+        <tr><td>Interés más cercano</td><td class="num">{{ l.nearest_poi or '—' }}</td></tr>
+        <tr><td>POIs en 10 km</td><td class="num">{{ l.poi_count_10km }}</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card section">
+  <h2>Simular esta inversión</h2>
+  <p class="note">Calcula coste total, implantación en la parcela y plan de negocio del alquiler turístico.</p>
+  <form method="get" action="/simular" class="filters">
+    <input type="hidden" name="listing_id" value="{{ listing.id }}">
+    <div style="grid-column: span 2"><button type="submit">Abrir simulador con esta parcela</button></div>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+  const map = L.map('map').setView([{{ listing.lat }}, {{ listing.lon }}], 14);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '© OpenStreetMap'}).addTo(map);
+  L.marker([{{ listing.lat }}, {{ listing.lon }}]).addTo(map);
+  {% if listing.parcel_geojson %}
+  L.geoJSON({{ listing.parcel_geojson | tojson_safe | safe }}, {style: {color:'#2f6f4f', weight:2, fillOpacity:.2}}).addTo(map);
+  {% endif %}
+</script>
+{% endblock %}

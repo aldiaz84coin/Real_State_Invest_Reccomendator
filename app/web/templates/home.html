@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% set active = 'home' %}
+{% block content %}
+<h1>Panel de inversión</h1>
+<p class="note" style="max-width:70ch">
+  Localiza terrenos infravalorados en zonas donde el suelo sube y hay atractivo turístico,
+  simula la inversión completa con una vivienda prefabricada y obtén el plan de negocio
+  del alquiler turístico con su implantación en 2D y 3D.
+</p>
+
+{% if not idealista_ready %}
+<div class="alert warn" style="margin-top:18px">
+  <strong>Falta la clave de Idealista.</strong>
+  Sin ella la app funciona con las fuentes abiertas (Catastro, INE, OpenStreetMap), pero no
+  descarga anuncios en venta. Solicítala en
+  <a href="https://developers.idealista.com/access-request" target="_blank" rel="noopener">developers.idealista.com</a>
+  y configura <code>IDEALISTA_API_KEY</code> e <code>IDEALISTA_API_SECRET</code>.
+</div>
+{% endif %}
+
+<div class="grid cols-4 section" style="margin-top:20px">
+  <div class="stat"><div class="label">Terrenos</div><div class="value">{{ stats.listings }}</div><div class="note">anuncios cargados</div></div>
+  <div class="stat"><div class="label">Analizados</div><div class="value">{{ stats.scored }}</div><div class="note">con puntuación</div></div>
+  <div class="stat"><div class="label">Municipios</div><div class="value">{{ stats.municipalities }}</div><div class="note">con serie de precios</div></div>
+  <div class="stat"><div class="label">Puntos de interés</div><div class="value">{{ stats.pois }}</div><div class="note">playa, montaña, turismo</div></div>
+</div>
+
+<div class="section">
+  <h2>Mejores oportunidades</h2>
+  {% if top %}
+  <div class="card scroll-x">
+    <table>
+      <thead><tr>
+        <th>Ubicación</th><th class="num">Superficie</th><th class="num">Precio</th>
+        <th class="num">€/m²</th><th class="num">Descuento</th><th class="num">Suelo</th>
+        <th>Entorno</th><th class="num">Nota</th><th></th>
+      </tr></thead>
+      <tbody>
+      {% for row in top %}
+        <tr>
+          <td><strong>{{ row.municipality or row.title[:44] }}</strong><br><span class="note">{{ row.province }}</span></td>
+          <td class="num">{{ '{:,.0f}'.format(row.area_m2) }} m²</td>
+          <td class="num">{{ row.price_eur | euro }}</td>
+          <td class="num">{{ '%.0f'|format(row.price_eur_m2) }}</td>
+          <td class="num">
+            {% if row.discount_pct > 0 %}<span class="badge ok">−{{ '%.0f'|format(row.discount_pct) }}%</span>
+            {% else %}<span class="badge mute">—</span>{% endif %}
+          </td>
+          <td class="num">{% if row.cagr_pct > 0 %}<span class="badge ok">+{{ '%.1f'|format(row.cagr_pct) }}%</span>{% else %}<span class="badge mute">—</span>{% endif %}</td>
+          <td class="note">{% if row.dist_beach_km %}🏖 {{ row.dist_beach_km }} km{% endif %}
+              {% if row.dist_mountain_km %} ⛰ {{ row.dist_mountain_km }} km{% endif %}</td>
+          <td class="num"><strong>{{ row.score }}</strong></td>
+          <td><a class="btn ghost" href="/oportunidad/{{ row.id }}">Ver</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card">
+    <h3>Todavía no hay terrenos cargados</h3>
+    <p class="note">Para empezar, en este orden:</p>
+    <ol class="note" style="line-height:1.9">
+      <li>Comprueba el acceso a las fuentes en <a href="/fuentes">Fuentes de datos</a>.</li>
+      <li>Carga puntos de interés de una zona: <code>POST /api/ingest/pois</code> con <code>{"lat":36.72,"lon":-4.42,"radius_km":40}</code>.</li>
+      <li>Descarga terrenos: <code>POST /api/ingest/listings</code> (requiere clave de Idealista).</li>
+      <li>Puntúa todo: <code>POST /api/analyze-all</code>.</li>
+    </ol>
+    <p class="note">O prueba el <a href="/simular">simulador</a> directamente introduciendo precio, superficie y coordenadas a mano.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

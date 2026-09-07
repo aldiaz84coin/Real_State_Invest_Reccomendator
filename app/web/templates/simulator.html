@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% set active = 'sim' %}
+{% block title %}Simulador de inversión{% endblock %}
+{% block content %}
+<h1>Simulador de inversión</h1>
+<p class="note">Coste total de compra e instalación, implantación sobre la parcela y plan de negocio del alquiler turístico.</p>
+
+{% if error %}<div class="alert bad" style="margin-top:14px">{{ error }}</div>{% endif %}
+
+<div class="card section" style="margin-top:16px">
+  <form method="post" action="/simular">
+    {% if listing %}<input type="hidden" name="listing_id" value="{{ listing.id }}">{% endif %}
+
+    <h3>Parcela</h3>
+    <div class="filters">
+      <div><label>Precio del terreno (€)</label>
+        <input type="number" name="land_price_eur" step="500" required
+               value="{{ form.land_price_eur if form else (listing.price_eur | round | int if listing else 45000) }}"></div>
+      <div><label>Superficie (m²)</label>
+        <input type="number" name="parcel_area_m2" step="10" required
+               value="{{ form.parcel_area_m2 if form else (listing.area_m2 | round | int if listing else 900) }}"></div>
+      <div><label>Latitud</label>
+        <input type="number" name="lat" step="0.000001" required
+               value="{{ form.lat if form else (listing.lat if listing else 36.7213) }}"></div>
+      <div><label>Longitud</label>
+        <input type="number" name="lon" step="0.000001" required
+               value="{{ form.lon if form else (listing.lon if listing else -4.4214) }}"></div>
+      <div>
+        <label>Comunidad autónoma (fiscalidad)</label>
+        <select name="ccaa">
+          {% for c in ['Andalucia','Aragon','Asturias','Baleares','Canarias','Cantabria','Castilla-La Mancha','Castilla y Leon','Cataluna','Comunidad Valenciana','Extremadura','Galicia','La Rioja','Madrid','Murcia','Navarra','Pais Vasco'] %}
+            <option value="{{ c }}" {{ 'selected' if (form.ccaa if form else 'Andalucia') == c }}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="sib" name="seller_is_business" {{ 'checked' if form and form.seller_is_business }}>
+        <label for="sib">Vendedor empresa (IVA + AJD)</label>
+      </div>
+    </div>
+
+    <h3 style="margin-top:22px">Vivienda prefabricada</h3>
+    <div class="filters">
+      <div style="grid-column: span 2">
+        <label>Modelo</label>
+        <select name="model_id" id="model_id">
+          {% for m in models %}
+            <option value="{{ m.id }}" {{ 'selected' if (form.model_id if form else 'plegable-40-2dorm') == m.id }}>
+              {{ m.name }} — {{ m.area_m2 }} m², {{ m.bedrooms }} dorm · módulo {{ '{:,.0f}'.format(m.turnkey_module_eur) }} €
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="check"><input type="checkbox" id="pool" name="include_pool" {{ 'checked' if form and form.include_pool }}><label for="pool">Con piscina</label></div>
+      <div><label>Coste piscina (€)</label><input type="number" name="pool_eur" step="500" value="{{ form.pool_eur if form else 22000 }}"></div>
+      <div class="check"><input type="checkbox" id="og" name="off_grid" {{ 'checked' if form and form.off_grid }}><label for="og">Sin red eléctrica (solar)</label></div>
+      <div><label>Imprevistos</label><input type="number" name="contingency_rate" step="0.01" min="0" max="0.5" value="{{ form.contingency_rate if form else 0.10 }}"></div>
+    </div>
+
+    <h3 style="margin-top:22px">Implantación</h3>
+    <div class="filters">
+      <div><label>Retranqueo frontal (m)</label><input type="number" name="setback_front_m" step="0.5" value="{{ form.setback_front_m if form else 5 }}"></div>
+      <div><label>Retranqueo lateral (m)</label><input type="number" name="setback_sides_m" step="0.5" value="{{ form.setback_sides_m if form else 3 }}"></div>
+      <div><label>Ocupación máxima</label><input type="number" name="max_occupancy_rate" step="0.05" min="0.05" max="1" value="{{ form.max_occupancy_rate if form else 0.30 }}"></div>
+      <div class="check"><input type="checkbox" id="ter" name="include_terrace" {{ 'checked' if not form or form.include_terrace }}><label for="ter">Terraza</label></div>
+      <div class="check"><input type="checkbox" id="park" name="include_parking" {{ 'checked' if not form or form.include_parking }}><label for="park">Aparcamiento</label></div>
+    </div>
+
+    <h3 style="margin-top:22px">Explotación turística <span class="note">(en blanco = datos reales de la zona)</span></h3>
+    <div class="filters">
+      <div><label>Tarifa por noche (€)</label><input type="number" name="adr_eur" step="5" value="{{ form.adr_eur if form else '' }}" placeholder="según zona"></div>
+      <div><label>Ocupación anual</label><input type="number" name="occupancy_rate" step="0.01" min="0.01" max="1" value="{{ form.occupancy_rate if form else '' }}" placeholder="según zona"></div>
+      <div><label>Comisión de gestión</label><input type="number" name="management_fee" step="0.01" min="0" max="0.6" value="{{ form.management_fee if form else 0.18 }}"></div>
+      <div><label>Préstamo (€)</label><input type="number" name="loan_amount_eur" step="1000" value="{{ form.loan_amount_eur if form else 0 }}"></div>
+      <div><label>Interés</label><input type="number" name="loan_rate" step="0.001" value="{{ form.loan_rate if form else 0.045 }}"></div>
+      <div><label>Plazo (años)</label><input type="number" name="loan_years" value="{{ form.loan_years if form else 15 }}"></div>
+    </div>
+
+    <div style="margin-top:20px"><button type="submit">Calcular simulación</button></div>
+  </form>
+</div>
+
+{% if result %}
+{% set inv = result.investment %}
+{% set bp = result.business_plan %}
+{% set sp = result.site_plan %}
+{% set su = result.summary %}
+
+<div class="grid cols-4 section">
+  <div class="stat"><div class="label">Inversión total</div><div class="value">{{ su.total_investment_eur | euro }}</div>
+    <div class="note">{{ su.investment_per_m2_built | euro }}/m² construido</div></div>
+  <div class="stat good"><div class="label">Ingresos brutos</div><div class="value">{{ su.annual_revenue_eur | euro }}</div>
+    <div class="note">{{ bp.revenue.occupied_nights }} noches/año</div></div>
+  <div class="stat {{ 'good' if su.net_yield_pct >= 6 else ('warn' if su.net_yield_pct >= 3 else 'bad') }}">
+    <div class="label">Rentabilidad neta</div><div class="value">{{ su.net_yield_pct }}%</div>
+    <div class="note">EBITDA {{ su.annual_ebitda_eur | euro }}</div></div>
+  <div class="stat {{ 'good' if su.payback_years and su.payback_years <= 12 else 'warn' }}">
+    <div class="label">Recuperación</div><div class="value">{{ su.payback_years or '—' }} años</div>
+    <div class="note">TIR {{ su.irr_pct or '—' }}% · VAN {{ su.npv_eur | euro }}</div></div>
+</div>
+
+<div class="card section">
+  <h2>Propuesta sobre la parcela</h2>
+  <p class="note">
+    {{ result.model.name }} · parcela {{ sp.metrics.parcel_area_m2 }} m² ·
+    edificable tras retranqueos {{ sp.metrics.buildable_area_m2 }} m² ·
+    huella {{ sp.metrics.house_footprint_m2 }} m²
+    ({{ (sp.compliance.occupancy_rate * 100) | round(1) }}% de ocupación)
+  </p>
+
+  {% for w in sp.warnings %}<div class="alert warn">{{ w }}</div>{% endfor %}
+
+  <div class="tabs">
+    <button type="button" class="active" data-view="view2d">Plano 2D</button>
+    <button type="button" data-view="view3d">Vista 3D</button>
+  </div>
+
+  <div id="view2d">{{ sp.svg | safe }}</div>
+  <div id="view3d" hidden>
+    <div class="viewer-wrap">
+      <div id="viewer3d"></div>
+      <div class="viewer-hint">Arrastra para girar · rueda para acercar</div>
+    </div>
+  </div>
+</div>
+
+<div class="grid cols-2 section">
+  <div class="card scroll-x">
+    <h2>Coste total de la inversión</h2>
+    <table>
+      <thead><tr><th>Concepto</th><th class="num">Importe</th></tr></thead>
+      <tbody>
+      {% set labels = {'compra':'Compra del terreno','impuestos':'Impuestos de compra','tecnicos':'Estudios técnicos','vivienda':'Vivienda prefabricada','obra':'Obra de parcela','acometidas':'Acometidas','licencias':'Proyecto, licencias e impuestos de obra','equipamiento':'Equipamiento','contingencia':'Imprevistos'} %}
+      {% for category, total in inv.by_category.items() %}
+        <tr><td><strong>{{ labels.get(category, category) }}</strong></td><td class="num"><strong>{{ total | euro }}</strong></td></tr>
+        {% for line in inv.lines if line.category == category %}
+          <tr><td class="note" style="padding-left:22px">{{ line.concept }}{% if line.detail %}<br><span style="opacity:.75">{{ line.detail }}</span>{% endif %}</td>
+              <td class="num note">{{ line.amount_eur | euro }}</td></tr>
+        {% endfor %}
+      {% endfor %}
+      </tbody>
+      <tfoot><tr><td>Total</td><td class="num">{{ inv.total_eur | euro }}</td></tr></tfoot>
+    </table>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Cuenta de explotación anual</h2>
+      {% set mr = result.market_reference %}
+      <div class="alert {{ 'info' if mr.is_real_data else 'warn' }}">
+        Tarifa {{ bp.revenue.adr_eur }} €/noche y ocupación {{ bp.revenue.occupancy_rate | pct }} —
+        {% if mr.is_real_data %}
+          {{ mr.source }}, {{ mr.reference }} ({{ mr.sample_size }} anuncios reales{% if mr.distance_km %}, a {{ mr.distance_km }} km{% endif %}).
+        {% else %}
+          sin datos reales para esta zona, estimación conservadora.
+        {% endif %}
+      </div>
+      <table>
+        <tr><td>Ingresos brutos</td><td class="num">{{ bp.revenue.gross_revenue_eur | euro }}</td></tr>
+        <tr><td class="note" style="padding-left:18px">Comisión de plataforma</td><td class="num note">−{{ bp.revenue.platform_commission_eur | euro }}</td></tr>
+        {% set clabels = {'limpieza':'Limpieza','consumibles':'Consumibles','gestion':'Gestión','suministros':'Suministros','seguro':'Seguro','ibi':'IBI','mantenimiento':'Mantenimiento','asesoria':'Asesoría','channel_manager':'Channel manager'} %}
+        {% for key, value in bp.operating_costs.items() if key != 'total_eur' %}
+          <tr><td class="note" style="padding-left:18px">{{ clabels.get(key, key) }}</td><td class="num note">−{{ value | euro }}</td></tr>
+        {% endfor %}
+        <tr><td><strong>EBITDA</strong></td><td class="num"><strong>{{ bp.profit_and_loss.ebitda_eur | euro }}</strong></td></tr>
+        <tr><td class="note" style="padding-left:18px">Margen</td><td class="num note">{{ bp.profit_and_loss.ebitda_margin | pct }}</td></tr>
+        <tr><td class="note" style="padding-left:18px">Intereses</td><td class="num note">−{{ bp.profit_and_loss.interest_eur | euro }}</td></tr>
+        <tr><td class="note" style="padding-left:18px">Impuestos</td><td class="num note">−{{ bp.profit_and_loss.tax_eur | euro }}</td></tr>
+        <tr><td><strong>Flujo de caja</strong></td><td class="num"><strong>{{ bp.profit_and_loss.cash_flow_eur | euro }}</strong></td></tr>
+      </table>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>Estacionalidad</h2>
+      <p class="note">Patrón «{{ bp.assumptions.zone_type }}». La ocupación media anual se reparte según la demanda real de ese tipo de zona.</p>
+      <table>
+        <thead><tr><th>Mes</th><th class="num">Ocupación</th><th class="num">Noches</th><th class="num">Ingresos</th></tr></thead>
+        <tbody>
+        {% for m in bp.monthly %}
+          <tr><td>{{ m.month }}</td><td class="num">{{ m.occupancy | pct(0) }}</td><td class="num">{{ m.nights }}</td><td class="num">{{ m.revenue | euro }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card section scroll-x">
+  <h2>Proyección a {{ bp.assumptions.horizon_years }} años</h2>
+  <table>
+    <thead><tr><th class="num">Año</th><th class="num">Ingresos</th><th class="num">Costes</th><th class="num">EBITDA</th>
+      <th class="num">Intereses</th><th class="num">Amortiz. préstamo</th><th class="num">Impuestos</th>
+      <th class="num">Flujo de caja</th><th class="num">Acumulado</th></tr></thead>
+    <tbody>
+    {% for y in bp.projection %}
+      <tr>
+        <td class="num">{{ y.year }}</td>
+        <td class="num">{{ y.gross_revenue | euro }}</td>
+        <td class="num">{{ y.operating_costs | euro }}</td>
+        <td class="num">{{ y.ebitda | euro }}</td>
+        <td class="num">{{ y.interest | euro }}</td>
+        <td class="num">{{ y.principal | euro }}</td>
+        <td class="num">{{ y.tax | euro }}</td>
+        <td class="num">{{ y.cash_flow | euro }}</td>
+        <td class="num"><strong>{{ y.accumulated_cash_flow | euro }}</strong></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if bp.warnings %}
+<div class="card section">
+  <h2>Advertencias</h2>
+  <ul class="clean">{% for w in bp.warnings %}<li>⚠ {{ w }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if result %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="/static/viewer3d.js"></script>
+<script>
+  const sitePlan = {{ result.site_plan | tojson_safe | safe }};
+  let viewerStarted = false;
+
+  document.querySelectorAll('.tabs button').forEach(function (button) {
+    button.addEventListener('click', function () {
+      document.querySelectorAll('.tabs button').forEach(function (b) { b.classList.remove('active'); });
+      button.classList.add('active');
+      const target = button.dataset.view;
+      document.getElementById('view2d').hidden = target !== 'view2d';
+      document.getElementById('view3d').hidden = target !== 'view3d';
+      // La escena 3D se construye al abrir la pestaña: montarla oculta daría
+      // un lienzo de ancho cero y un encuadre roto.
+      if (target === 'view3d' && !viewerStarted) {
+        viewerStarted = true;
+        window.initSiteViewer3D('viewer3d', sitePlan);
+      }
+    });
+  });
+</script>
+{% endif %}
+{% endblock %}
