@@ -4,6 +4,7 @@ El fallo que motivó estos tests es real: el servicio OVC del Catastro cerró la
 conexión sin responder y la app lo reportó como fuente caída. Aquí se reproduce
 ese corte con un servidor local que se comporta igual.
 """
+import json
 import socket
 import threading
 
@@ -841,9 +842,10 @@ class TestFotocasaApiReal:
                 vistos.append(url)
                 return httpx.Response(
                     200,
-                    json={"suggestions": [
-                        {"name": "Madrid",
-                         "combinedLocations": "724,14,28,173,0,28079,0,0,0"}
+                    json={"data": [
+                        {"combinedLocationIds": "724,14,28,173,0,28079,0,0,0",
+                         "coordinates": {"latitude": 40.4, "longitude": -3.7},
+                         "text": "Madrid, Madrid"}
                     ]},
                     request=httpx.Request(method, url),
                 )
@@ -865,7 +867,9 @@ class TestFotocasaApiReal:
             def fake(self, method, url, **kw):
                 llamadas["n"] += 1
                 return httpx.Response(
-                    200, json={"combinedLocations": "1,2,3"},
+                    200,
+                    json={"data": [{"combinedLocationIds": "1,2,3,4,5,6,0,0,0",
+                                    "coordinates": {"latitude": 40.4, "longitude": -3.7}}]},
                     request=httpx.Request(method, url),
                 )
 
@@ -890,14 +894,15 @@ class TestFotocasaApiReal:
             monkeypatch.setattr(
                 httpx.Client, "request",
                 lambda self, method, url, **kw: httpx.Response(
-                    200, json={"suggestions": [{"nombre": "Madrid", "zoneId": 28079}]},
+                    200, json={"data": [{"nombre": "Madrid", "zoneId": 28079,
+                                         "coordinates": {"latitude": 40.4, "longitude": -3.7}}]},
                     request=httpx.Request(method, url),
                 ),
             )
             with pytest.raises(SourceError) as error:
                 source.resolve_location(40.4, -3.7, query="madrid")
             mensaje = str(error.value)
-            assert "identificador de zona" in mensaje
+            assert "sugerencia" in mensaje
             assert "zoneId" in mensaje       # el cuerpo real viaja en el error
             assert "28079" in mensaje
         finally:
@@ -910,16 +915,21 @@ class TestFotocasaApiReal:
 
         source = self._source(monkeypatch)
         try:
-            for clave in ("combinedLocations", "combinedLocation", "locationIds"):
+            for clave in ("combinedLocationIds", "combinedLocations",
+                          "combinedLocation", "locationIds"):
                 source._locations_cache.clear()
                 monkeypatch.setattr(
                     httpx.Client, "request",
                     lambda self, method, url, _k=clave, **kw: httpx.Response(
-                        200, json={"data": [{_k: "1,2,3"}]},
+                        200,
+                        json={"data": [{_k: "1,2,3,4,5,6,0,0,0",
+                                        "coordinates": {"latitude": 40.4,
+                                                        "longitude": -3.7}}]},
                         request=httpx.Request(method, url),
                     ),
                 )
-                assert source.resolve_location(40.4, -3.7, query="madrid") == "1,2,3", clave
+                assert source.resolve_location(
+                    40.4, -3.7, query="madrid") == "1,2,3,4,5,6,0,0,0", clave
         finally:
             get_settings.cache_clear()
 
@@ -931,13 +941,13 @@ class TestFotocasaApiReal:
             monkeypatch.setattr(
                 httpx.Client, "request",
                 lambda self, method, url, **kw: httpx.Response(
-                    200, json={"suggestions": [{"zoneId": 28079}]},
+                    200, json={"data": [{"zoneId": 28079}]},
                     request=httpx.Request(method, url),
                 ),
             )
             raw = source.suggestions_raw("madrid")
             assert raw["http_status"] == 200
-            assert raw["body"] == {"suggestions": [{"zoneId": 28079}]}
+            assert raw["body"] == {"data": [{"zoneId": 28079}]}
             assert raw["combined_locations_found"] is None
         finally:
             get_settings.cache_clear()
@@ -957,13 +967,15 @@ class TestFotocasaApiReal:
             def fake(self, method, url, **kw):
                 consultas.append(kw.get("params", {}).get("query", ""))
                 return httpx.Response(
-                    200, json={"combinedLocations": "ZONA-MARBELLA"},
+                    200,
+                    json={"data": [{"combinedLocationIds": "724,1,29,300,500,29069,0,0,0",
+                                    "coordinates": {"latitude": 36.51, "longitude": -4.88}}]},
                     request=httpx.Request(method, url),
                 )
 
             monkeypatch.setattr(httpx.Client, "request", fake)
             params = source.prepare_params(36.51, -4.88, 15, page=1)
-            assert params["combinedLocations"] == "ZONA-MARBELLA"
+            assert params["combinedLocations"] == "724,1,29,300,500,29069,0,0,0"
             assert consultas == ["Marbella"]
         finally:
             get_settings.cache_clear()
@@ -1035,13 +1047,15 @@ class TestPreparacionDeParametros:
             monkeypatch.setattr(
                 httpx.Client, "request",
                 lambda self, method, url, **kw: httpx.Response(
-                    200, json={"combinedLocations": "724,14,29,0,0,29067,0,0,0"},
+                    200,
+                    json={"data": [{"combinedLocationIds": "724,1,29,319,547,29067,0,0,0",
+                                    "coordinates": {"latitude": 36.7217, "longitude": -4.41862}}]},
                     request=httpx.Request(method, url),
                 ),
             )
             params = source.prepare_params(36.7213, -4.4214, 15.0, page=1)
             # Es el parámetro que su API declara obligatorio.
-            assert params["combinedLocations"] == "724,14,29,0,0,29067,0,0,0"
+            assert params["combinedLocations"] == "724,1,29,319,547,29067,0,0,0"
         finally:
             get_settings.cache_clear()
 
@@ -1088,3 +1102,78 @@ class TestPreparacionDeParametros:
         fuente = inspect.getsource(main.api_probe_rapidapi)
         assert "prepare_params" in fuente
         assert "provider.build_params" not in fuente
+
+
+# Respuesta literal de /suggestions?query=Málaga del proveedor, capturada en
+# producción. Es la referencia de todos los tests de selección de zona.
+RESPUESTA_SUGGESTIONS_MALAGA = json.loads(r"""{"success":true,"data":[{"localizationLevel5":"","combinedLocationIds":"724,1,29,0,0,0,0,0,0","coordinates":{"longitude":-4.41491,"latitude":36.72},"text":"Málaga","baseText":"Málaga"},{"localizationLevel5":"Málaga","combinedLocationIds":"724,1,29,319,547,29067,0,0,0","coordinates":{"longitude":-4.41862,"latitude":36.7217},"text":"Málaga, Málaga","baseText":"Málaga"},{"localizationLevel5":"Vélez-Málaga","combinedLocationIds":"724,1,29,323,561,29094,0,0,0","coordinates":{"longitude":-4.10077,"latitude":36.784},"text":"Vélez-Málaga, Málaga","baseText":"Vélez-Málaga"},{"localizationLevel5":"Vélez-Málaga","combinedLocationIds":"724,1,29,323,561,29094,0,3553,1029","coordinates":{"longitude":-4.10236,"latitude":36.74332},"text":"Viña Málaga, Vélez-Málaga","baseText":"Viña Málaga"},{"localizationLevel5":"","combinedLocationIds":"724,1,29,319,0,0,0,0,0","coordinates":{"longitude":-4.427950797706377,"latitude":36.722615963289364},"text":"Málaga capital y entorno, Málaga","baseText":"Málaga capital y entorno"},{"localizationLevel5":"Vélez-Málaga","combinedLocationIds":"724,1,29,323,561,29094,0,3552,0","coordinates":{"longitude":-4.10032,"latitude":36.77798},"text":"Vélez-Málaga ciudad, Vélez-Málaga","baseText":"Vélez-Málaga ciudad"},{"localizationLevel5":"","combinedLocationIds":"malaga-grinon","coordinates":{"longitude":-3.845498993283961,"latitude":40.2202423014089},"text":"Málaga, Griñón","baseText":"Málaga"},{"localizationLevel5":"","combinedLocationIds":"724,1,29,319,547,0,0,0,0","coordinates":{"longitude":-4.41862,"latitude":36.7217},"text":"Málaga, Zona de","baseText":"Málaga, Zona de"},{"localizationLevel5":"","combinedLocationIds":"malaga-villaviciosa-de-odon","coordinates":{"longitude":-3.91037376133964,"latitude":40.36042679552922},"text":"Málaga, Villaviciosa de Odón","baseText":"Málaga"},{"localizationLevel5":"Vélez-Málaga","combinedLocationIds":"724,1,29,323,561,29094,0,3552,1023","coordinates":{"longitude":-4.10634,"latitude":36.77581},"text":"Camino Viejo de Málaga, Vélez-Málaga","baseText":"Camino Viejo de Málaga"}]}""")
+
+
+class TestSeleccionDeZona:
+    """La respuesta real trae diez sugerencias, y elegir mal es fácil: la
+    primera es la provincia entera y dos son municipios homónimos de Madrid,
+    a más de 400 km."""
+
+    def test_elige_el_municipio_y_no_la_provincia(self):
+        from app.sources.rapidapi import select_location_id
+
+        ident, detalle = select_location_id(RESPUESTA_SUGGESTIONS_MALAGA, 36.7213, -4.4214)
+        assert ident == "724,1,29,319,547,29067,0,0,0"
+        assert detalle["text"] == "Málaga, Málaga"
+        assert detalle["depth"] == 6
+
+    def test_no_elige_la_primera_sugerencia(self):
+        """La primera es la provincia: 724,1,29,0,0,0,0,0,0."""
+        from app.sources.rapidapi import select_location_id
+
+        primera = RESPUESTA_SUGGESTIONS_MALAGA["data"][0]["combinedLocationIds"]
+        ident, _ = select_location_id(RESPUESTA_SUGGESTIONS_MALAGA, 36.7213, -4.4214)
+        assert ident != primera
+
+    def test_descarta_los_homonimos_lejanos(self):
+        """«Málaga, Griñón» y «Málaga, Villaviciosa de Odón» están en Madrid."""
+        from app.sources.rapidapi import select_location_id
+
+        ident, detalle = select_location_id(RESPUESTA_SUGGESTIONS_MALAGA, 36.7213, -4.4214)
+        assert "grinon" not in str(ident)
+        assert "villaviciosa" not in str(ident)
+        # De diez sugerencias, sólo ocho caen cerca del punto.
+        assert detalle["candidates_considered"] == 8
+
+    def test_distingue_velez_malaga_de_malaga(self):
+        """Mismo texto de búsqueda, punto distinto, zona distinta."""
+        from app.sources.rapidapi import select_location_id
+
+        ident, detalle = select_location_id(RESPUESTA_SUGGESTIONS_MALAGA, 36.784, -4.10077)
+        assert ident == "724,1,29,323,561,29094,0,0,0"
+        assert "Vélez" in detalle["text"]
+
+    def test_rechaza_si_ninguna_sugerencia_esta_cerca(self):
+        """Buscar «Málaga» desde Marbella no debe devolver la zona de Málaga."""
+        from app.sources.rapidapi import select_location_id
+
+        ident, detalle = select_location_id(RESPUESTA_SUGGESTIONS_MALAGA, 36.5101, -4.8825)
+        assert ident is None and detalle == {}
+
+    def test_prefiere_el_nivel_municipio_al_barrio(self):
+        from app.sources.rapidapi import select_location_id
+
+        # Junto a «Viña Málaga» (barrio, 8 niveles) gana Vélez-Málaga (6).
+        ident, _ = select_location_id(RESPUESTA_SUGGESTIONS_MALAGA, 36.74332, -4.10236)
+        assert ident == "724,1,29,323,561,29094,0,0,0"
+
+    def test_el_nombre_real_del_campo_se_reconoce(self):
+        """Es combinedLocationIds, no combinedLocations como decía la doc."""
+        from app.sources.rapidapi import _find_combined_locations
+
+        assert _find_combined_locations(
+            {"combinedLocationIds": "1,2,3"}, deep=False
+        ) == "1,2,3"
+
+    def test_profundidad_de_un_identificador(self):
+        from app.sources.rapidapi import _location_depth
+
+        assert _location_depth("724,1,29,0,0,0,0,0,0") == 3         # provincia
+        assert _location_depth("724,1,29,319,547,29067,0,0,0") == 6  # municipio
+        assert _location_depth("724,1,29,323,561,29094,0,3552,1023") == 8  # barrio
+        assert _location_depth("malaga-grinon") == 0                # slug, no jerárquico

@@ -381,6 +381,7 @@ class RapidApiFotocasaSource(RapidApiSource):
     def __init__(self) -> None:
         super().__init__()
         self._locations_cache: dict[str, str] = {}
+        self.last_location_choice: dict[str, Any] = {}
 
     def build_params(self, lat: float, lon: float, radius_km: float, **filters: Any) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -424,8 +425,11 @@ class RapidApiFotocasaSource(RapidApiSource):
                 )
             query = place["municipality"]
 
-        if query in self._locations_cache:
-            return self._locations_cache[query]
+        # La cache incluye el punto: la eleccion depende de las coordenadas,
+        # no solo del nombre.
+        cache_key = f"{query}|{lat:.3f},{lon:.3f}"
+        if cache_key in self._locations_cache:
+            return self._locations_cache[cache_key]
 
         response = self.request(
             "GET",
@@ -443,17 +447,19 @@ class RapidApiFotocasaSource(RapidApiSource):
         except ValueError:
             raise SourceError(f"{self.name}: /suggestions no devolvió JSON.") from None
 
-        combined = _find_combined_locations(payload)
+        combined, detalle = select_location_id(payload, lat, lon)
+        self.last_location_choice = detalle
         if not combined:
             # El cuerpo va en el propio error: sin el no hay forma de saber
             # como llama este proveedor al identificador de zona, y remitir al
             # diagnostico seria circular porque falla en este mismo punto.
             cuerpo = json.dumps(payload, ensure_ascii=False)[:800]
             raise SourceError(
-                f"{self.name}: /suggestions respondió pero no se encontró el "
-                f"identificador de zona para «{query}». Respuesta recibida: {cuerpo}"
+                f"{self.name}: /suggestions respondió pero ninguna sugerencia "
+                f"para «{query}» cae a menos de {MAX_SUGGESTION_DISTANCE_KM:.0f} km "
+                f"del punto buscado. Respuesta recibida: {cuerpo}"
             )
-        self._locations_cache[query] = str(combined)
+        self._locations_cache[cache_key] = str(combined)
         return str(combined)
 
     def suggestions_raw(self, query: str) -> dict[str, Any]:
@@ -479,6 +485,12 @@ class RapidApiFotocasaSource(RapidApiSource):
         result["body"] = payload
         result["combined_locations_found"] = _find_combined_locations(payload)
         return result
+
+    def suggestions_choice(self, query: str, lat: float, lon: float) -> dict[str, Any]:
+        """Qué sugerencia se elegiría para un punto, y por qué."""
+        raw = self.suggestions_raw(query)
+        identifier, detalle = select_location_id(raw.get("body"), lat, lon)
+        return {**raw, "selected": identifier, "selection": detalle}
 
 
 class RapidApiIdealista17Source(RapidApiSource):
@@ -571,8 +583,9 @@ def _looks_like_listings(candidate: list[Any]) -> bool:
 
 
 # Nombres con los que un proveedor puede llamar al identificador de zona. El
-# de la documentacion es el primero; los demas cubren variaciones habituales.
+# primero es el real de Fotocasa; los demas cubren variaciones.
 COMBINED_LOCATION_KEYS = (
+    "combinedlocationids",
     "combinedlocations",
     "combinedlocation",
     "combined",
@@ -580,13 +593,89 @@ COMBINED_LOCATION_KEYS = (
     "locationid",
 )
 
+# Distancia maxima a la que una sugerencia puede considerarse del sitio
+# buscado. /suggestions responde por coincidencia de texto, asi que al pedir
+# "Malaga" devuelve tambien un Malaga de Grinon y otro de Villaviciosa de
+# Odon, ambos en Madrid y a mas de 400 km.
+MAX_SUGGESTION_DISTANCE_KM = 30.0
 
-def _find_combined_locations(payload: Any) -> Any:
+# Un identificador tiene un segmento por nivel administrativo. El municipio
+# suele quedar en el sexto: menos segmentos es la provincia entera y mas es un
+# barrio, demasiado estrecho para una busqueda por zona.
+TARGET_LOCATION_DEPTH = 6
+
+
+def _location_depth(identifier: Any) -> int:
+    """Cuantos niveles concreta un identificador de zona."""
+    parts = str(identifier).split(",")
+    if not all(part.strip().lstrip("-").isdigit() for part in parts):
+        return 0  # identificadores con forma de slug, no jerarquicos
+    return sum(1 for part in parts if part.strip() not in ("0", ""))
+
+
+def _iter_suggestions(payload: Any) -> Iterable[dict[str, Any]]:
+    """Recorre los diccionarios de la respuesta que llevan identificador."""
+    if isinstance(payload, dict):
+        if _find_combined_locations(payload, deep=False):
+            yield payload
+        for value in payload.values():
+            yield from _iter_suggestions(value)
+    elif isinstance(payload, list):
+        for element in payload:
+            yield from _iter_suggestions(element)
+
+
+def _find_combined_locations(payload: Any, deep: bool = True) -> Any:
     for name in COMBINED_LOCATION_KEYS:
-        found = _find_key(payload, name)
+        found = _find_key(payload, name) if deep else _shallow_key(payload, name)
         if found:
             return found
     return None
+
+
+def _shallow_key(payload: Any, target: str) -> Any:
+    if not isinstance(payload, dict):
+        return None
+    for key, value in payload.items():
+        if str(key).lower() == target and value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def select_location_id(payload: Any, lat: float, lon: float) -> tuple[Any, dict[str, Any]]:
+    """Elige la sugerencia que de verdad corresponde al punto buscado.
+
+    No vale con tomar la primera: /suggestions ordena por relevancia de texto y
+    la primera suele ser la provincia entera, ademas de colarse municipios
+    homonimos de otra punta del pais. Se filtra por distancia real a las
+    coordenadas y, entre las cercanas, se prefiere el nivel de municipio.
+    """
+    from app.analysis.geo import haversine_km
+
+    candidatos: list[tuple[float, float, Any, dict[str, Any]]] = []
+    for suggestion in _iter_suggestions(payload):
+        identifier = _find_combined_locations(suggestion, deep=False)
+        coordinates = suggestion.get("coordinates") or {}
+        s_lat = _as_float(coordinates.get("latitude"))
+        s_lon = _as_float(coordinates.get("longitude"))
+        if s_lat is None or s_lon is None:
+            continue
+        distance = haversine_km(lat, lon, s_lat, s_lon)
+        if distance > MAX_SUGGESTION_DISTANCE_KM:
+            continue
+        depth_gap = abs(_location_depth(identifier) - TARGET_LOCATION_DEPTH)
+        candidatos.append((depth_gap, distance, identifier, suggestion))
+
+    if not candidatos:
+        return None, {}
+    candidatos.sort(key=lambda item: (item[0], item[1]))
+    _, distance, identifier, suggestion = candidatos[0]
+    return identifier, {
+        "text": suggestion.get("text", ""),
+        "distance_km": round(distance, 2),
+        "depth": _location_depth(identifier),
+        "candidates_considered": len(candidatos),
+    }
 
 
 def _find_key(payload: Any, target: str) -> Any:
