@@ -142,7 +142,22 @@ prudente.
 **dibujado a escala a partir de sus dimensiones reales** —alzado acotado y planta
 con el reparto de salón, baños y dormitorios—, junto a superficie, dimensiones,
 acabado, aislamiento, garantía, plazo de entrega y desglose del precio del módulo.
-**Fotos reales.** Cada modelo admite una foto que se sube sin redesplegar:
+**Fotos reales.** La app puede **traer la foto del propio anuncio de referencia**:
+
+```bash
+curl -X POST https://<tu-app>.fly.dev/api/prefab-models/plegable-40-2dorm/image/fetch
+# o todas de golpe:
+curl -X POST https://<tu-app>.fly.dev/api/prefab-models/images/fetch-all
+```
+
+En el simulador hay un botón «Traer foto del anuncio» en cada ficha que hace lo
+mismo. **La descarga la hace el servidor, no el navegador**: lee la `og:image`
+de la página del producto, se la trae con las cabeceras adecuadas y la guarda
+en el volumen. Enlazar la imagen de la tienda daría fotos rotas, porque
+rechazan las peticiones cuyo `Referer` no es el suyo.
+
+Si el vendedor bloquea la descarga —Amazon lo hace a menudo—, la respuesta lo
+dice y queda la vía manual:
 
 ```bash
 curl -X POST -F "file=@mi-foto.jpg;type=image/jpeg" \
@@ -153,6 +168,10 @@ Se guarda en el volumen, así que sobrevive a los despliegues. Admite JPEG, PNG 
 WebP hasta 6 MB; se rechaza cualquier otro tipo, SVG incluido, porque puede
 llevar scripts. Se quita con `DELETE` sobre la misma ruta. También se puede
 enlazar una URL externa con `PREFAB_IMAGES=modelo=https://...`.
+
+**Los anuncios inmobiliarios ya traen su foto**: Idealista y los proveedores de
+RapidAPI la devuelven en la respuesta, y el buscador la muestra como miniatura
+en cada resultado.
 
 **El esquema no desaparece cuando hay foto**: queda desplegable debajo. Los dos
 sirven para cosas distintas — la foto enseña el acabado, el esquema las

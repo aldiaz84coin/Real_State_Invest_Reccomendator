@@ -36,10 +36,16 @@
     <h3>{{ results|length }} resultado{{ '' if results|length == 1 else 's' }}</h3>
     {% if results %}
     <table>
-      <thead><tr><th>Ubicación</th><th class="num">m²</th><th class="num">€/m²</th><th class="num">Desc.</th><th class="num">Nota</th></tr></thead>
+      <thead><tr><th></th><th>Ubicación</th><th class="num">m²</th><th class="num">€/m²</th><th class="num">Desc.</th><th class="num">Nota</th></tr></thead>
       <tbody>
       {% for r in results %}
         <tr onclick="window.location='/oportunidad/{{ r.id }}'" style="cursor:pointer">
+          <td class="thumb-cell">
+            {% if r.thumbnail %}
+              <img class="listing-thumb" src="{{ r.thumbnail }}" alt="" loading="lazy"
+                   onerror="this.style.display='none'">
+            {% else %}<span class="thumb-placeholder">—</span>{% endif %}
+          </td>
           <td><strong>{{ r.municipality or r.title[:36] }}</strong><br><span class="note">{{ r.province }}{% if r.nearest_poi %} · {{ r.nearest_poi[:26] }}{% endif %}</span></td>
           <td class="num">{{ '{:,.0f}'.format(r.area_m2) }}</td>
           <td class="num">{{ '%.0f'|format(r.price_eur_m2) }}</td>

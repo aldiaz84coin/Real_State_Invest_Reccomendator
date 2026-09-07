@@ -1177,3 +1177,158 @@ class TestSeleccionDeZona:
         assert _location_depth("724,1,29,319,547,29067,0,0,0") == 6  # municipio
         assert _location_depth("724,1,29,323,561,29094,0,3552,1023") == 8  # barrio
         assert _location_depth("malaga-grinon") == 0                # slug, no jerárquico
+
+
+class TestImagenDeReferencia:
+    """La descarga la hace el servidor desplegado, que sí tiene red. Enlazar la
+    imagen de la tienda daría fotos rotas: rechazan las peticiones cuyo Referer
+    no es el suyo."""
+
+    @staticmethod
+    def _source():
+        from app.sources.images import ReferenceImageSource
+
+        return ReferenceImageSource()
+
+    def test_extrae_og_image(self):
+        html = '<meta property="og:image" content="https://cdn/foto.jpg">'
+        assert self._source().extract_image_url(html, "https://tienda/x") == "https://cdn/foto.jpg"
+
+    def test_extrae_og_image_con_atributos_invertidos(self):
+        html = '<meta content="https://cdn/f.jpg" property="og:image">'
+        assert self._source().extract_image_url(html, "https://t/x") == "https://cdn/f.jpg"
+
+    def test_cae_a_twitter_image(self):
+        html = '<meta name="twitter:image" content="https://cdn/tw.jpg">'
+        assert self._source().extract_image_url(html, "https://t/x") == "https://cdn/tw.jpg"
+
+    def test_resuelve_rutas_relativas(self):
+        html = '<meta property="og:image" content="/img/casa.jpg">'
+        resultado = self._source().extract_image_url(html, "https://tienda.es/producto/1")
+        assert resultado == "https://tienda.es/img/casa.jpg"
+
+    def test_desescapa_entidades(self):
+        html = '<meta property="og:image" content="https://cdn/f.jpg?a=1&amp;b=2">'
+        assert self._source().extract_image_url(html, "https://t/") == "https://cdn/f.jpg?a=1&b=2"
+
+    def test_sin_imagen_declarada(self):
+        assert self._source().extract_image_url("<html></html>", "https://t/") is None
+
+    def test_rechaza_urls_que_no_son_http(self):
+        from app.sources.base import SourceError
+
+        with pytest.raises(SourceError, match="http"):
+            self._source().fetch("file:///etc/passwd")
+
+    def test_descarga_directa_de_una_imagen(self, monkeypatch):
+        monkeypatch.setattr(
+            httpx.Client, "request",
+            lambda self, method, url, **kw: httpx.Response(
+                200, content=b"binario", headers={"content-type": "image/jpeg"},
+                request=httpx.Request(method, url),
+            ),
+        )
+        contenido, extension = self._source().fetch("https://cdn/foto.jpg")
+        assert contenido == b"binario" and extension == ".jpg"
+
+    def test_dos_pasos_pagina_y_luego_imagen(self, monkeypatch):
+        """Lo habitual: la URL es la del anuncio, no la de la foto."""
+        def fake(self, method, url, **kw):
+            if url.endswith(".webp"):
+                return httpx.Response(
+                    200, content=b"foto", headers={"content-type": "image/webp"},
+                    request=httpx.Request(method, url),
+                )
+            return httpx.Response(
+                200, text='<meta property="og:image" content="https://cdn/p.webp">',
+                headers={"content-type": "text/html"},
+                request=httpx.Request(method, url),
+            )
+
+        monkeypatch.setattr(httpx.Client, "request", fake)
+        contenido, extension = self._source().fetch("https://tienda.es/producto/1")
+        assert contenido == b"foto" and extension == ".webp"
+
+    def test_explica_el_bloqueo_de_la_tienda(self, monkeypatch):
+        """Un 403 al descargar la imagen es el caso más común y frecuente."""
+        from app.sources.base import SourceError
+
+        def fake(self, method, url, **kw):
+            if url.endswith(".jpg"):
+                return httpx.Response(403, request=httpx.Request(method, url))
+            return httpx.Response(
+                200, text='<meta property="og:image" content="https://cdn/x.jpg">',
+                headers={"content-type": "text/html"},
+                request=httpx.Request(method, url),
+            )
+
+        monkeypatch.setattr(httpx.Client, "request", fake)
+        with pytest.raises(SourceError) as error:
+            self._source().fetch("https://tienda.es/p/1")
+        assert "403" in str(error.value)
+        assert "a mano" in str(error.value)     # dice qué hacer, no sólo que falló
+
+    def test_rechaza_tipos_que_no_son_imagen(self, monkeypatch):
+        from app.sources.base import SourceError
+
+        monkeypatch.setattr(
+            httpx.Client, "request",
+            lambda self, method, url, **kw: httpx.Response(
+                200, content=b"<svg/>", headers={"content-type": "image/svg+xml"},
+                request=httpx.Request(method, url),
+            ),
+        )
+        with pytest.raises(SourceError, match="no admitido"):
+            self._source().fetch("https://cdn/x.svg")
+
+    def test_manda_referer_para_no_ser_bloqueado(self, monkeypatch):
+        cabeceras = {}
+
+        def fake(self, method, url, **kw):
+            cabeceras.update(kw.get("headers") or {})
+            return httpx.Response(
+                200, content=b"x", headers={"content-type": "image/png"},
+                request=httpx.Request(method, url),
+            )
+
+        monkeypatch.setattr(httpx.Client, "request", fake)
+        self._source().fetch("https://tienda.es/p/1")
+        assert cabeceras.get("Referer") == "https://tienda.es/p/1"
+
+
+class TestMiniaturaDelAnuncio:
+    """Las APIs ya devuelven la foto del anuncio; descartarla era desaprovecharla."""
+
+    def test_idealista_conserva_la_miniatura(self):
+        from app.sources.idealista import IdealistaSource
+
+        item = {"propertyCode": "1", "price": 1000, "size": 500,
+                "latitude": 36.7, "longitude": -4.4,
+                "thumbnail": "https://img.idealista.com/foto.jpg"}
+        resultado = IdealistaSource.normalize(item)
+        assert resultado["raw"]["thumbnail_url"] == "https://img.idealista.com/foto.jpg"
+
+    def test_rapidapi_busca_la_foto_en_varios_campos(self):
+        from app.sources.rapidapi import RapidApiIdealista17Source
+
+        source = RapidApiIdealista17Source()
+        for campo in ("thumbnail", "image", "mainImage", "photo"):
+            item = {"propertyCode": "1", "price": 1000, "size": 500,
+                    campo: "https://cdn/f.jpg"}
+            assert source.normalize(item)["raw"]["thumbnail_url"] == "https://cdn/f.jpg", campo
+
+    def test_encuentra_la_foto_dentro_de_una_lista(self):
+        """Varios proveedores anidan las fotos en un array."""
+        from app.sources.rapidapi import RapidApiIdealista17Source
+
+        item = {"propertyCode": "1", "price": 1000, "size": 500,
+                "images": [{"url": "https://cdn/primera.jpg"},
+                           {"url": "https://cdn/segunda.jpg"}]}
+        resultado = RapidApiIdealista17Source().normalize(item)
+        assert resultado["raw"]["thumbnail_url"] == "https://cdn/primera.jpg"
+
+    def test_sin_foto_queda_vacio_y_no_rompe(self):
+        from app.sources.rapidapi import RapidApiIdealista17Source
+
+        item = {"propertyCode": "1", "price": 1000, "size": 500}
+        assert RapidApiIdealista17Source().normalize(item)["raw"]["thumbnail_url"] == ""

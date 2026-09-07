@@ -34,6 +34,7 @@ from app.simulation.siteplan import SitePlanOptions
 from app.sources.base import SourceError
 from app.sources.catastro import CatastroSource
 from app.sources.idealista import IdealistaSource
+from app.sources.images import ReferenceImageSource
 from app.sources.osm import OverpassSource
 from app.sources.rapidapi import extract_listings, iter_rapidapi_sources
 from app.sources.registry import check_all
@@ -216,6 +217,71 @@ async def upload_prefab_model_image(
     }
 
 
+@app.post("/api/prefab-models/{model_id}/image/fetch", tags=["simulacion"])
+def fetch_prefab_model_image(
+    model_id: str,
+    url: str | None = Query(None, description="URL alternativa; por defecto, la del catálogo"),
+) -> dict[str, Any]:
+    """Descarga la foto desde el anuncio de referencia del modelo.
+
+    Lo hace el servidor, no el navegador: así la imagen queda guardada y
+    servida por la propia app. Enlazarla directamente daría fotos rotas,
+    porque las tiendas rechazan las peticiones que no vienen de su web.
+    """
+    try:
+        model = get_model(model_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+
+    page_url = url or model.reference_url
+    if not page_url:
+        raise HTTPException(
+            422,
+            f"«{model.name}» no tiene anuncio de referencia en el catálogo. "
+            "Pasa una URL con ?url=... o sube la foto a mano.",
+        )
+
+    try:
+        content, extension = ReferenceImageSource().fetch(page_url)
+    except SourceError as exc:
+        raise HTTPException(502, str(exc)) from None
+
+    settings = get_settings()
+    directory = Path(settings.model_images_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    for other in IMAGE_EXTENSIONS:
+        (directory / f"{model_id}{other}").unlink(missing_ok=True)
+    destination = directory / f"{model_id}{extension}"
+    destination.write_bytes(content)
+
+    return {
+        "model_id": model.id,
+        "source_url": page_url,
+        "stored_as": destination.name,
+        "bytes": len(content),
+        "url": f"/api/prefab-models/{model_id}/image",
+    }
+
+
+@app.post("/api/prefab-models/images/fetch-all", tags=["simulacion"])
+def fetch_all_prefab_images() -> dict[str, Any]:
+    """Intenta traer la foto de todos los modelos que tengan referencia."""
+    resultados = []
+    for model in CATALOG:
+        if not model.reference_url:
+            resultados.append({"model_id": model.id, "skipped": "sin anuncio de referencia"})
+            continue
+        try:
+            resultados.append(fetch_prefab_model_image(model.id))
+        except HTTPException as exc:
+            resultados.append({"model_id": model.id, "error": str(exc.detail)[:250]})
+    return {
+        "results": resultados,
+        "ok": sum(1 for r in resultados if r.get("stored_as")),
+        "total": len(resultados),
+    }
+
+
 @app.delete("/api/prefab-models/{model_id}/image", tags=["simulacion"])
 def delete_prefab_model_image(model_id: str) -> dict[str, Any]:
     """Quita la foto de un modelo; vuelve a mostrarse sólo el esquema."""
@@ -295,6 +361,7 @@ def _query_opportunities(db: Session, query: OpportunityQuery) -> list[dict[str,
             "dist_beach_km": score.dist_beach_km,
             "dist_mountain_km": score.dist_mountain_km,
             "nearest_poi": score.nearest_poi,
+            "thumbnail": (listing.raw or {}).get("thumbnail_url"),
             "components": {
                 "undervaluation": score.undervaluation_score,
                 "trend": score.trend_score,
