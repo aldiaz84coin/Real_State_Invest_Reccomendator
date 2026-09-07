@@ -142,8 +142,22 @@ prudente.
 **dibujado a escala a partir de sus dimensiones reales** —alzado acotado y planta
 con el reparto de salón, baños y dormitorios—, junto a superficie, dimensiones,
 acabado, aislamiento, garantía, plazo de entrega y desglose del precio del módulo.
-No son fotos de catálogo: para decidir entre modelos, ver la proporción real y el
-reparto interior dice más que una foto, y cada ficha enlaza su referencia comercial.
+**Fotos reales.** Cada modelo admite una foto que se sube sin redesplegar:
+
+```bash
+curl -X POST -F "file=@mi-foto.jpg;type=image/jpeg" \
+  https://<tu-app>.fly.dev/api/prefab-models/plegable-40-2dorm/image
+```
+
+Se guarda en el volumen, así que sobrevive a los despliegues. Admite JPEG, PNG y
+WebP hasta 6 MB; se rechaza cualquier otro tipo, SVG incluido, porque puede
+llevar scripts. Se quita con `DELETE` sobre la misma ruta. También se puede
+enlazar una URL externa con `PREFAB_IMAGES=modelo=https://...`.
+
+**El esquema no desaparece cuando hay foto**: queda desplegable debajo. Los dos
+sirven para cosas distintas — la foto enseña el acabado, el esquema las
+proporciones y el reparto interior a escala— y la app no trae fotos de fábrica
+porque son material del fabricante.
 
 **Parcela real del Catastro.** El simulador consulta el Catastro con las
 coordenadas y trae el polígono real de la parcela, con su referencia catastral y

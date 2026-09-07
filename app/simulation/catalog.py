@@ -11,6 +11,7 @@ sobreescribir en la simulacion.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -176,6 +177,22 @@ CATALOG: list[PrefabModel] = [
 
 CATALOG_BY_ID: dict[str, PrefabModel] = {model.id: model for model in CATALOG}
 DEFAULT_MODEL_ID = "plegable-40-2dorm"
+
+
+# Formatos admitidos para las fotos, en orden de preferencia.
+IMAGE_EXTENSIONS = (".webp", ".jpg", ".jpeg", ".png")
+
+
+def image_path_for(model_id: str) -> Path | None:
+    """Ruta de la foto real de un modelo, si se ha subido alguna."""
+    from app.config import get_settings
+
+    directory = Path(get_settings().model_images_dir)
+    for extension in IMAGE_EXTENSIONS:
+        candidate = directory / f"{model_id}{extension}"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def get_model(model_id: str) -> PrefabModel:

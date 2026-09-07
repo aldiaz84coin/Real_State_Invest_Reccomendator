@@ -164,3 +164,19 @@ ul.clean li:last-child { border-bottom: 0; }
   text-transform: uppercase; letter-spacing: .04em;
 }
 .model-card .notes { font-size: .78rem; color: var(--text-dim); line-height: 1.4; }
+
+/* Foto real del modelo, cuando se ha aportado una */
+.model-photo {
+  display: block; width: 100%; height: 170px; object-fit: cover;
+  border-radius: 8px; background: var(--surface-2);
+}
+.model-card .model-photo { height: 150px; }
+#viewmodel .model-photo { height: auto; max-height: 300px; object-fit: contain; }
+.model-schema { margin-top: 8px; }
+.model-schema summary {
+  cursor: pointer; font-size: .78rem; color: var(--text-dim); padding: 3px 0;
+  list-style: none;
+}
+.model-schema summary::before { content: "▸ "; }
+.model-schema[open] summary::before { content: "▾ "; }
+.model-schema summary:hover { color: var(--text); }

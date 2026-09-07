@@ -7,8 +7,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
@@ -25,7 +25,9 @@ from app.schemas import (
     SimulationRequest,
 )
 from app.services import analyze_listing, run_full_simulation
-from app.simulation.catalog import CATALOG, get_model, list_models
+from app.simulation.catalog import (
+    CATALOG, IMAGE_EXTENSIONS, get_model, image_path_for, list_models,
+)
 from app.simulation.render_model import render_model_card_svg
 from app.simulation.costs import CostAssumptions
 from app.simulation.siteplan import SitePlanOptions
@@ -124,12 +126,105 @@ def prefab_model_preview(model_id: str) -> Response:
     )
 
 
+# Sólo formatos de imagen habituales en web: nada de SVG, que puede llevar
+# scripts, ni de tipos arbitrarios.
+ALLOWED_IMAGE_TYPES = {
+    "image/webp": ".webp",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+}
+
+
+def _model_image_url(model_id: str) -> str | None:
+    """Foto real del modelo: primero una URL configurada, luego la subida."""
+    configured = get_settings().prefab_image_url(model_id)
+    if configured:
+        return configured
+    if image_path_for(model_id):
+        return f"/api/prefab-models/{model_id}/image"
+    return None
+
+
 def _model_cards() -> list[dict[str, Any]]:
-    """Catálogo con la ficha ya dibujada, para pintar el selector."""
+    """Catálogo con la ficha dibujada y, si la hay, la foto real."""
     return [
-        {**model.as_dict(), "preview_svg": render_model_card_svg(model)}
+        {
+            **model.as_dict(),
+            "preview_svg": render_model_card_svg(model),
+            "image_url": _model_image_url(model.id),
+        }
         for model in CATALOG
     ]
+
+
+@app.get("/api/prefab-models/{model_id}/image", tags=["simulacion"])
+def prefab_model_image(model_id: str) -> FileResponse:
+    """Sirve la foto real subida para un modelo."""
+    get_model(model_id)  # valida contra el catálogo: nada de rutas arbitrarias
+    path = image_path_for(model_id)
+    if path is None:
+        raise HTTPException(404, f"No hay foto subida para «{model_id}».")
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.post("/api/prefab-models/{model_id}/image", tags=["simulacion"])
+async def upload_prefab_model_image(
+    model_id: str, file: UploadFile = File(...)
+) -> dict[str, Any]:
+    """Sube la foto real de un modelo.
+
+    Se guarda en el volumen y no en la imagen del contenedor, así que se puede
+    añadir sin volver a desplegar. El esquema a escala sigue disponible: la
+    foto enseña el acabado y el esquema, las proporciones.
+    """
+    try:
+        model = get_model(model_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+
+    extension = ALLOWED_IMAGE_TYPES.get((file.content_type or "").lower())
+    if extension is None:
+        raise HTTPException(
+            415,
+            f"Formato no admitido ({file.content_type}). "
+            f"Usa {', '.join(sorted(ALLOWED_IMAGE_TYPES))}.",
+        )
+
+    settings = get_settings()
+    content = await file.read(settings.max_image_bytes + 1)
+    if len(content) > settings.max_image_bytes:
+        raise HTTPException(
+            413, f"La imagen supera el máximo de {settings.max_image_bytes // 1024 // 1024} MB."
+        )
+    if not content:
+        raise HTTPException(422, "El fichero está vacío.")
+
+    directory = Path(settings.model_images_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    # Se borran las demás extensiones para que no queden dos fotos del mismo
+    # modelo y gane la que resuelva primero el orden de búsqueda.
+    for other in IMAGE_EXTENSIONS:
+        (directory / f"{model_id}{other}").unlink(missing_ok=True)
+    destination = directory / f"{model_id}{extension}"
+    destination.write_bytes(content)
+
+    return {
+        "model_id": model.id,
+        "stored_as": destination.name,
+        "bytes": len(content),
+        "url": f"/api/prefab-models/{model_id}/image",
+    }
+
+
+@app.delete("/api/prefab-models/{model_id}/image", tags=["simulacion"])
+def delete_prefab_model_image(model_id: str) -> dict[str, Any]:
+    """Quita la foto de un modelo; vuelve a mostrarse sólo el esquema."""
+    get_model(model_id)
+    path = image_path_for(model_id)
+    if path is None:
+        raise HTTPException(404, f"No hay foto subida para «{model_id}».")
+    path.unlink()
+    return {"model_id": model_id, "deleted": path.name}
 
 
 # ---------------------------------------------------------------- oportunidades
