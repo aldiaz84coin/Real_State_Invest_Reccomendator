@@ -101,6 +101,16 @@ class RapidApiSource(BaseSource):
     ) -> dict[str, Any]:  # pragma: no cover - lo concreta cada portal
         raise NotImplementedError
 
+    def prepare_params(
+        self, lat: float, lon: float, radius_km: float, **filters: Any
+    ) -> dict[str, Any]:
+        """Parametros listos para la peticion.
+
+        Existe aparte de build_params porque algun proveedor necesita una
+        llamada previa para resolver la zona antes de poder buscar.
+        """
+        return self.build_params(lat, lon, radius_km, **filters)
+
     def search_lands(
         self,
         lat: float,
@@ -120,7 +130,7 @@ class RapidApiSource(BaseSource):
 
         results: list[dict[str, Any]] = []
         for page in range(1, max_pages + 1):
-            params = self.build_params(
+            params = self.prepare_params(
                 lat, lon, radius_km,
                 min_size_m2=min_size_m2, max_size_m2=max_size_m2,
                 max_price=max_price, page=page,
@@ -346,31 +356,98 @@ class RapidApiIdealistaSource(RapidApiSource):
 
 
 class RapidApiFotocasaSource(RapidApiSource):
-    """Cubre el hueco que Fotocasa no permite por vía oficial."""
+    """Cubre el hueco que Fotocasa no permite por vía oficial.
+
+    Su API no busca por radio sino por zona: /searchads exige un
+    `combinedLocations`, un identificador que hay que pedir antes a
+    /suggestions con el nombre del municipio. Por eso la busqueda aqui son dos
+    pasos, y el municipio se deduce del punto por geocodificacion inversa para
+    no pedirselo al usuario.
+    """
 
     key = "rapidapi_fotocasa"
     name = "Fotocasa vía RapidAPI (respaldo no oficial)"
     portal = "Fotocasa"
     host = "fotocasa3.p.rapidapi.com"
-    # Rutas reales de su documentacion. Las anteriores eran suposiciones y
-    # devolvian 404 todas: /searchads es la busqueda, no /search.
-    search_paths = ("/searchads", "/property-search", "/search")
-    # Endpoint de salud propio: comprobar con el no gasta cuota de busqueda.
+    search_paths = ("/searchads",)
+    suggestions_path = "/suggestions"
     health_path = "/health"
     docs_url = "https://rapidapi.com/happyendpoint/api/fotocasa3"
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._locations_cache: dict[str, str] = {}
+
     def build_params(self, lat: float, lon: float, radius_km: float, **filters: Any) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "operation": "buy",
-            "propertyType": "land",
             "latitude": lat,
             "longitude": lon,
-            "distance": int(radius_km * 1000),
-            "page": filters.get("page", 1),
+            "pageNumber": filters.get("page", 1),
+            "size": 30,
+            "transactionType": "BUY",
+            "propertyType": "LAND",          # terrenos, que es lo que busca la app
+            "publicationDate": "INDIFFERENT",
+            "sortType": "PRICE_PER_AREA",    # los mas baratos por m2 primero
+            "sortOrderDesc": "false",
         }
+        combined = filters.get("combined_locations")
+        if combined:
+            params["combinedLocations"] = combined
+        if filters.get("min_size_m2"):
+            params["minSurface"] = int(filters["min_size_m2"])
+        if filters.get("max_size_m2"):
+            params["maxSurface"] = int(filters["max_size_m2"])
         if filters.get("max_price"):
             params["maxPrice"] = int(filters["max_price"])
         return params
+
+    def prepare_params(self, lat: float, lon: float, radius_km: float, **filters: Any) -> dict[str, Any]:
+        if not filters.get("combined_locations"):
+            filters["combined_locations"] = self.resolve_location(lat, lon)
+        return self.build_params(lat, lon, radius_km, **filters)
+
+    def resolve_location(self, lat: float, lon: float, query: str | None = None) -> str:
+        """Traduce un punto al identificador de zona que exige /searchads."""
+        if query is None:
+            # Nominatim es gratuito y no consume cuota de RapidAPI.
+            from app.sources.osm import NominatimSource
+
+            place = NominatimSource().reverse(lat, lon)
+            if not place:
+                raise SourceError(
+                    f"{self.name}: no se pudo determinar el municipio de "
+                    f"({lat}, {lon}), y su API busca por zona, no por radio."
+                )
+            query = place["municipality"]
+
+        if query in self._locations_cache:
+            return self._locations_cache[query]
+
+        response = self.request(
+            "GET",
+            f"{self.base_url()}{self.suggestions_path}",
+            headers=self.headers(),
+            params={"query": query},
+        )
+        if response.status_code != 200:
+            raise SourceError(
+                f"{self.name}: /suggestions devolvió HTTP {response.status_code} "
+                f"para «{query}»."
+            )
+        try:
+            payload = response.json()
+        except ValueError:
+            raise SourceError(f"{self.name}: /suggestions no devolvió JSON.") from None
+
+        combined = _find_key(payload, "combinedlocations")
+        if not combined:
+            raise SourceError(
+                f"{self.name}: /suggestions no devolvió combinedLocations para "
+                f"«{query}». Revisa la respuesta con "
+                "/api/sources/rapidapi/probe para ajustar el mapeo."
+            )
+        self._locations_cache[query] = str(combined)
+        return str(combined)
 
 
 class RapidApiIdealista17Source(RapidApiSource):
@@ -460,6 +537,25 @@ def _looks_like_listings(candidate: list[Any]) -> bool:
         if any(hint in key for key in lowered for hint in PRICE_HINTS):
             return True
     return False
+
+
+def _find_key(payload: Any, target: str) -> Any:
+    """Busca en profundidad el primer valor de una clave, sin importar dónde
+    la anide el proveedor ni cómo la capitalice."""
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if str(key).lower() == target and value not in (None, "", [], {}):
+                return value
+        for value in payload.values():
+            found = _find_key(value, target)
+            if found is not None:
+                return found
+    elif isinstance(payload, list):
+        for element in payload:
+            found = _find_key(element, target)
+            if found is not None:
+                return found
+    return None
 
 
 def pick(item: dict[str, Any], candidates: Iterable[str]) -> Any:
