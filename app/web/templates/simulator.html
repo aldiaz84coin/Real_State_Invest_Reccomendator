@@ -95,10 +95,16 @@
             <span><strong>{{ m.turnkey_module_eur | euro }}</strong>
               <span class="muted">· {{ m.price_per_m2 | euro }}/m²</span></span>
           </div>
-          {% if m.reference_url %}
-          <a class="note" href="{{ m.reference_url }}" target="_blank" rel="noopener"
-             onclick="event.stopPropagation()">Ver referencia comercial ↗</a>
-          {% endif %}
+          <div class="card-actions">
+            {% if m.reference_url %}
+            <a class="note" href="{{ m.reference_url }}" target="_blank" rel="noopener"
+               onclick="event.stopPropagation()">Ver anuncio ↗</a>
+            <button type="button" class="btn-mini" data-fetch-image="{{ m.id }}"
+                    onclick="event.preventDefault(); event.stopPropagation(); traerFoto(this)">
+              {{ 'Actualizar foto' if m.image_url else 'Traer foto del anuncio' }}
+            </button>
+            {% endif %}
+          </div>
         </div>
       </label>
       {% endfor %}
@@ -131,6 +137,38 @@
 
     <div style="margin-top:20px"><button type="submit">Calcular simulación</button></div>
   </form>
+
+  <script>
+    // La descarga la hace el servidor: enlazar la imagen de la tienda daría
+    // fotos rotas, porque rechazan las peticiones que no vienen de su web.
+    async function traerFoto(boton) {
+      const modelo = boton.dataset.fetchImage;
+      const original = boton.textContent;
+      boton.disabled = true;
+      boton.textContent = 'Trayendo…';
+      try {
+        const respuesta = await fetch(
+          `/api/prefab-models/${modelo}/image/fetch`, { method: 'POST' });
+        const datos = await respuesta.json();
+        if (!respuesta.ok) throw new Error(datos.detail || 'no se pudo');
+        // Se fuerza la recarga de la imagen esquivando la caché del navegador.
+        const tarjeta = boton.closest('.model-card');
+        const previo = tarjeta.querySelector('.preview');
+        previo.insertAdjacentHTML('afterbegin',
+          `<img class="model-photo" src="${datos.url}?t=${Date.now()}" alt="">`);
+        boton.textContent = 'Foto actualizada';
+      } catch (error) {
+        boton.textContent = 'No disponible';
+        boton.title = String(error.message).slice(0, 300);
+        console.warn('Foto de referencia:', error);
+      } finally {
+        setTimeout(function () {
+          boton.disabled = false;
+          boton.textContent = original;
+        }, 4000);
+      }
+    }
+  </script>
 </div>
 
 {% if result %}

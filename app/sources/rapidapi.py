@@ -36,6 +36,9 @@ FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
     "title": ("title", "name", "suggestedTexts.title", "headline"),
     "description": ("description", "summary", "comment", "detail"),
     "land_type": ("detailedType.subTypology", "propertyType", "typology", "subTypology"),
+    # Cada proveedor llama distinto a la foto principal del anuncio.
+    "thumbnail_url": ("thumbnail", "image", "mainImage", "photo", "picture",
+                      "images.0.url", "multimedia.images.0.url", "media.0.url"),
 }
 
 # Claves cuya presencia delata que un diccionario es un anuncio y no metadatos.
@@ -238,6 +241,7 @@ class RapidApiSource(BaseSource):
         # marcan como pendientes y la ingesta los situa en el municipio.
         raw = dict(item)
         raw["coords_precision"] = "exact" if lat is not None and lon is not None else "missing"
+        raw["thumbnail_url"] = str(pick(item, FIELD_CANDIDATES["thumbnail_url"]) or "")
 
         return {
             "source": self.key,
@@ -707,11 +711,20 @@ def pick(item: dict[str, Any], candidates: Iterable[str]) -> Any:
 
 
 def _dig(item: Any, path: str) -> Any:
+    """Recorre una ruta con puntos, entrando también en listas por índice."""
     current = item
     for part in path.split("."):
-        if not isinstance(current, dict) or part not in current:
+        if isinstance(current, dict):
+            if part not in current:
+                return None
+            current = current[part]
+        elif isinstance(current, list) and part.isdigit():
+            index = int(part)
+            if index >= len(current):
+                return None
+            current = current[index]
+        else:
             return None
-        current = current[part]
     return current
 
 

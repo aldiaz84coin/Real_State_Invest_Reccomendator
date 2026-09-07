@@ -150,7 +150,9 @@ class IdealistaSource(BaseSource):
             "municipality_name": item.get("municipality", "") or "",
             "province": item.get("province", "") or "",
             "land_type": detailed.get("subTypology") or item.get("propertyType", "lands"),
-            "raw": item,
+            # La miniatura viene en la respuesta y da a la ficha el aspecto de
+            # un anuncio de verdad; descartarla era desaprovecharla.
+            "raw": {**item, "thumbnail_url": item.get("thumbnail") or ""},
         }
 
     def check(self) -> SourceStatus:
