@@ -12,7 +12,10 @@ configurable y el codigo no asume una forma de respuesta concreta.
 """
 from __future__ import annotations
 
+import time
 from typing import Any, Iterable
+
+import httpx
 
 from app.sources.base import BaseSource, SourceError, SourceStatus
 
@@ -165,8 +168,11 @@ class RapidApiSource(BaseSource):
                 raise SourceError(f"{self.name}: cuota de RapidAPI agotada (HTTP 429).")
             if response.status_code in (401, 403):
                 raise SourceError(
-                    f"{self.name}: la clave fue rechazada (HTTP {response.status_code}). "
-                    "Comprueba que estás suscrito a esta API en RapidAPI."
+                    f"{self.name}: clave rechazada (HTTP {response.status_code}). "
+                    "En RapidAPI hay que suscribirse a CADA API por separado, "
+                    "incluso al plan gratuito: estar suscrito a otra no sirve. "
+                    f"Entra en {self.docs_url}, pulsa «Subscribe to Test» y elige "
+                    "el plan Basic."
                 )
             if response.status_code in (404, 400):
                 errors.append(f"{path} -> HTTP {response.status_code}")
@@ -253,15 +259,37 @@ class RapidApiSource(BaseSource):
                 f"Falta el host de RapidAPI para {self.key}. Defínelo en "
                 f"RAPIDAPI_HOSTS como '{self.key}=mi-host.p.rapidapi.com'.",
             )
-        # Se sondea la propia ruta de búsqueda: es la que se va a usar, y un
-        # 200 en la portada del proveedor no garantizaría que funcione.
-        return self._timed_probe(
-            f"{self.base_url()}{self.search_path}",
-            method=self.search_method,
-            headers=self.headers(),
-            params=self.build_params(36.7213, -4.4214, 10.0, page=1),
-            expect=(200, 204),
-        )
+        # Se sondea con el mismo mecanismo que usa la búsqueda real, probando
+        # las rutas candidatas. Sondear sólo la primera marcaba en rojo a
+        # proveedores que sí funcionan por otra ruta.
+        started = time.perf_counter()
+        try:
+            path, payload = self.fetch_page(
+                self.build_params(36.7213, -4.4214, 10.0, page=1)
+            )
+        except SourceError as exc:
+            message = str(exc)
+            latency = int((time.perf_counter() - started) * 1000)
+            if "rechazada" in message:
+                return self._status("needs_credentials", message, 401, latency)
+            if "cuota" in message:
+                return self._status("error", message, 429, latency)
+            return self._status("error", message, latency_ms=latency)
+        except httpx.ProxyError as exc:
+            return self._status("unavailable", f"Bloqueado por el proxy de salida: {exc}")
+        except httpx.HTTPError as exc:
+            return self._status("error", f"{type(exc).__name__}: {exc}")
+
+        latency = int((time.perf_counter() - started) * 1000)
+        found = len(extract_listings(payload))
+        detail = f"Responde en {path}. Anuncios localizados en la prueba: {found}."
+        if not found:
+            detail += (
+                " Ninguno: puede ser normal si no hay terrenos en la zona de "
+                "prueba, o indicar que hay que ajustar el mapeo. Compruébalo "
+                "en /api/sources/rapidapi/probe."
+            )
+        return self._status("ok", detail, 200, latency)
 
 
 class RapidApiIdealistaSource(RapidApiSource):

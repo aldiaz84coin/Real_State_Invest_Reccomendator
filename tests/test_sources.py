@@ -587,3 +587,123 @@ class TestIdealista17:
             assert llamadas["n"] == 1
         finally:
             get_settings.cache_clear()
+
+
+class TestDiagnosticoDelPanel:
+    """El panel mostró un 404 en Fotocasa que la búsqueda real habría superado,
+    porque el health check probaba sólo la primera ruta candidata. Estos tests
+    fijan que el sondeo use el mismo mecanismo que la búsqueda."""
+
+    @staticmethod
+    def _source(monkeypatch):
+        from app.config import get_settings
+        from app.sources.rapidapi import RapidApiFotocasaSource
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "clave")
+        get_settings.cache_clear()
+        return RapidApiFotocasaSource()
+
+    def test_el_sondeo_prueba_las_rutas_alternativas(self, monkeypatch):
+        from app.config import get_settings
+
+        source = self._source(monkeypatch)
+        try:
+            visitadas: list[str] = []
+
+            ruta_buena = source.search_paths[1]
+
+            def fake(self, method, url, **kw):
+                visitadas.append(url)
+                # Sólo existe la segunda candidata; la primera devuelve 404.
+                if url.endswith(ruta_buena):
+                    return httpx.Response(
+                        200, json={"elementList": [{"price": 1, "size": 1}]},
+                        request=httpx.Request(method, url),
+                    )
+                return httpx.Response(404, request=httpx.Request(method, url))
+
+            monkeypatch.setattr(httpx.Client, "request", fake)
+            status = source.check()
+            assert status.access == "ok", status.detail
+            assert len(visitadas) == 2  # descartó la primera y acertó en la segunda
+            assert ruta_buena in status.detail
+            assert "Anuncios localizados en la prueba: 1" in status.detail
+        finally:
+            get_settings.cache_clear()
+
+    def test_el_401_se_explica_como_falta_de_suscripcion(self, monkeypatch):
+        """Es la causa real: en RapidAPI hay que suscribirse a cada API."""
+        from app.config import get_settings
+
+        source = self._source(monkeypatch)
+        try:
+            monkeypatch.setattr(
+                httpx.Client, "request",
+                lambda self, method, url, **kw: httpx.Response(
+                    401, request=httpx.Request(method, url)
+                ),
+            )
+            status = source.check()
+            assert status.access == "needs_credentials"
+            assert "suscribirse a CADA API" in status.detail
+            assert "Subscribe to Test" in status.detail
+        finally:
+            get_settings.cache_clear()
+
+    def test_el_401_no_gasta_cuota_probando_rutas(self, monkeypatch):
+        from app.config import get_settings
+
+        source = self._source(monkeypatch)
+        try:
+            llamadas = {"n": 0}
+
+            def fake(self, method, url, **kw):
+                llamadas["n"] += 1
+                return httpx.Response(401, request=httpx.Request(method, url))
+
+            monkeypatch.setattr(httpx.Client, "request", fake)
+            source.check()
+            assert llamadas["n"] == 1
+        finally:
+            get_settings.cache_clear()
+
+    def test_avisa_cuando_responde_pero_no_localiza_anuncios(self, monkeypatch):
+        """Un 200 vacío no es lo mismo que funcionar: puede ser mapeo roto."""
+        from app.config import get_settings
+
+        source = self._source(monkeypatch)
+        try:
+            monkeypatch.setattr(
+                httpx.Client, "request",
+                lambda self, method, url, **kw: httpx.Response(
+                    200, json={"algo": "que no son anuncios"},
+                    request=httpx.Request(method, url),
+                ),
+            )
+            status = source.check()
+            assert status.access == "ok"
+            assert "Anuncios localizados en la prueba: 0" in status.detail
+            assert "probe" in status.detail
+        finally:
+            get_settings.cache_clear()
+
+    def test_sin_clave_no_hace_ninguna_peticion(self, monkeypatch):
+        from app.config import get_settings
+        from app.sources.rapidapi import RapidApiFotocasaSource
+
+        monkeypatch.delenv("RAPIDAPI_KEY", raising=False)
+        monkeypatch.delenv("RAPIDAPI_KEYS", raising=False)
+        get_settings.cache_clear()
+        try:
+            llamadas = {"n": 0}
+
+            def fake(self, method, url, **kw):
+                llamadas["n"] += 1
+                raise AssertionError("no debería pedir nada sin clave")
+
+            monkeypatch.setattr(httpx.Client, "request", fake)
+            status = RapidApiFotocasaSource().check()
+            assert status.access == "needs_credentials"
+            assert llamadas["n"] == 0
+        finally:
+            get_settings.cache_clear()
