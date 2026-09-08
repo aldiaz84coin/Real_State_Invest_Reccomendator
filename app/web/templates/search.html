@@ -84,6 +84,10 @@
       {{ discovery.candidates|length }} candidata{{ '' if discovery.candidates|length == 1 else 's' }}
       <span class="note" style="font-weight:400">
         · {{ discovery.sources_ok }} de {{ discovery.attempts|length }} fuentes respondieron
+        {%- if discovery.center.source %}
+        · buscando alrededor de {{ discovery.center.source }}
+          ({{ '%.4f'|format(discovery.center.lat) }}, {{ '%.4f'|format(discovery.center.lon) }})
+        {%- endif %}
       </span>
     </h4>
     {% if discovery.candidates %}
@@ -153,11 +157,24 @@
               {%- if a.radius_note %}<br>{{ a.radius_note }}{% endif %}
               {%- if a.strategies %}
               <br>Búsquedas probadas en el portal:
-              {% for e in a.strategies %}<code>{{ e.name }}</code> →
-                {{ e.ids }} subasta{{ '' if e.ids == 1 else 's' }}
-                {%- if e.http_status %} (HTTP {{ e.http_status }}, {{ e.bytes }} bytes){% endif %}
-                {%- if e.error %} · {{ e.error }}{% endif %}{{ '; ' if not loop.last }}
+              <ul style="margin:6px 0 0 16px">
+              {% for e in a.strategies %}
+                <li>
+                  <code>{{ e.name }}</code>
+                  {%- if e.method %} {{ e.method }}{% endif %} →
+                  {{ e.ids }} subasta{{ '' if e.ids == 1 else 's' }}
+                  {%- if e.http_status %} · HTTP {{ e.http_status }}, {{ e.bytes }} bytes{% endif %}
+                  {%- if e.cookies %} · cookies: {{ e.cookies | join(', ') }}{% endif %}
+                  {%- if e.error %} · {{ e.error }}{% endif %}
+                  {%- if e.patterns %}
+                  <br><span class="note">enlaces: {% for k, v in e.patterns.items() %}{{ k }}={{ v }}{{ ' · ' if not loop.last }}{% endfor %}</span>
+                  {%- endif %}
+                  {%- if e.excerpt %}
+                  <br><span class="note">lo que devolvió: «{{ e.excerpt[:300] }}»</span>
+                  {%- endif %}
+                </li>
               {% endfor %}
+              </ul>
               {%- endif %}
             </td>
           </tr>

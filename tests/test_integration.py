@@ -482,6 +482,30 @@ class TestDescubrimientoWeb:
         pasos = re.findall(r'<input type="number"[^>]*step="([^"]+)"', html)
         assert pasos and all(p == "any" for p in pasos)
 
+    def test_el_municipio_se_situa_sin_tener_la_base_cargada(self, client, fuentes_simuladas, monkeypatch):
+        """Escribir «Noja» no hacía nada: el municipio se buscaba sólo en la
+        base, y con la base vacía —que es cuando se usa esto— nunca estaba."""
+        from app.sources.osm import NominatimSource
+
+        monkeypatch.setattr(
+            NominatimSource, "geocode",
+            lambda self, query: {"lat": 43.4869, "lon": -3.5290,
+                                 "display_name": "Noja, Cantabria"},
+        )
+        respuesta = client.post("/buscar/descubrir", data={"q": "Noja"})
+        assert respuesta.status_code == 200
+        assert "Nominatim" in respuesta.text
+        assert "43.4869" in respuesta.text
+
+    def test_si_no_se_situa_el_municipio_lo_dice(self, client, fuentes_simuladas, monkeypatch):
+        from app.sources.osm import NominatimSource
+
+        monkeypatch.setattr(NominatimSource, "geocode", lambda self, query: None)
+        respuesta = client.post("/buscar/descubrir", data={"q": "Sitio inexistente"})
+        assert "No se ha podido situar" in respuesta.text
+        # Y aun así se han consultado las fuentes que sí filtran por provincia.
+        assert "Subastas del BOE" in respuesta.text
+
     def test_dice_que_los_portales_necesitan_un_punto(self, client, fuentes_simuladas):
         """Sin coordenadas la tabla se quedaba a medias sin explicar por qué."""
         respuesta = client.post("/buscar/descubrir", data={"province": "Cantabria"})

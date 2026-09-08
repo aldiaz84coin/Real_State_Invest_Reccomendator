@@ -139,10 +139,17 @@ def _from_boe(
         info["error"] = str(exc)[:250]
         return info
 
+    # Se pasa tambien el cuerpo de la respuesta cuando no hay resultados: es
+    # lo unico que dice si el portal contesto "no hay nada", un error o una
+    # pagina de sesion caducada, y sin verlo solo cabe adivinar.
     info["strategies"] = [
         {"name": nombre, "ids": len(ids),
+         "method": detalle.get("method"),
          "http_status": detalle.get("http_status"),
          "bytes": detalle.get("bytes"),
+         "cookies": detalle.get("cookies"),
+         "patterns": detalle.get("link_patterns"),
+         "excerpt": detalle.get("body_excerpt"),
          "error": detalle.get("error")}
         for nombre, ids, detalle in intentos
     ]
