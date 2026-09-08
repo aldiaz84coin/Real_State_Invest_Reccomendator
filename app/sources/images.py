@@ -14,7 +14,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from app.sources.base import BaseSource, SourceError
+from app.sources.base import BaseSource, SourceBlocked, SourceError
 
 # Metaetiquetas donde las tiendas publican su imagen principal, en el orden en
 # que conviene probarlas: og:image es la que usan las redes sociales y suele
@@ -130,9 +130,9 @@ class ReferenceImageSource(BaseSource):
         """
         try:
             return self.request("GET", url, headers={"Referer": referer or url})
-        except httpx.ProxyError as exc:
+        except SourceBlocked:
             raise SourceError(
-                f"La red de este entorno bloquea {urlparse(url).netloc}: {exc}. "
+                f"La red de este entorno bloquea {urlparse(url).netloc}. "
                 "Desde el servidor desplegado sí debería funcionar."
             ) from None
         except httpx.HTTPError as exc:

@@ -18,7 +18,7 @@ from typing import Any, Iterable
 
 import httpx
 
-from app.sources.base import BaseSource, SourceError, SourceStatus
+from app.sources.base import BaseSource, SourceBlocked, SourceError, SourceStatus
 
 # Nombres de campo que usan los distintos proveedores para lo mismo. Se prueban
 # en orden y admiten rutas anidadas con puntos.
@@ -308,6 +308,8 @@ class RapidApiSource(BaseSource):
             path, payload = self.fetch_page(
                 self.prepare_params(36.7213, -4.4214, 10.0, page=1)
             )
+        except SourceBlocked as exc:
+            return self._status("unavailable", str(exc))
         except SourceError as exc:
             message = str(exc)
             latency = int((time.perf_counter() - started) * 1000)
@@ -316,8 +318,6 @@ class RapidApiSource(BaseSource):
             if "cuota" in message:
                 return _store_status(self.key, self._status("error", message, 429, latency))
             return _store_status(self.key, self._status("error", message, latency_ms=latency))
-        except httpx.ProxyError as exc:
-            return self._status("unavailable", f"Bloqueado por el proxy de salida: {exc}")
         except httpx.HTTPError as exc:
             return self._status("error", f"{type(exc).__name__}: {exc}")
 

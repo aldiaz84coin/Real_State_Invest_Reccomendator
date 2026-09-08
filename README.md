@@ -25,6 +25,30 @@ Esta fue la primera comprobación del proyecto y condiciona todo lo demás.
 | **AirROI** | Sí, de pago | Complemento opcional de pago por uso. |
 | **AirDNA** | Descartado | Su API sólo se comercializa con contrato *enterprise* (del orden de 50.000 $/año). |
 
+### Subastas del BOE: la alternativa gratuita que sí funciona
+
+Ningún portal privado ofrece lectura gratuita, pero el **Portal de Subastas del
+BOE** sí: inmuebles y fincas de subastas judiciales, notariales y de Hacienda,
+de toda España, con **valor de tasación, puja mínima y referencia catastral**.
+
+```bash
+curl -X POST "https://<tu-app>.fly.dev/api/ingest/boe-subastas?province=Cantabria"
+```
+
+Encaja con el propósito de la app por partida doble: en subasta el suelo suele
+salir por debajo de mercado, y la referencia catastral permite cruzar cada finca
+con su **geometría real** aunque la subasta no publique coordenadas — que nunca
+lo hace.
+
+Es información del sector público sujeta al régimen de reutilización de la Ley
+37/2007, no scraping de un portal privado. El conector filtra a suelo (fincas
+rústicas, solares, parcelas) y convierte hectáreas y áreas a metros cuadrados,
+porque las fincas se describen así y confundirlas altera el precio por metro en
+varios órdenes de magnitud.
+
+`GET /api/sources/boe/probe?province=Cantabria` diagnostica el parseo, y
+añadiendo `&id_sub=<id>` enseña el detalle de una subasta concreta.
+
 ### Respaldo no oficial vía RapidAPI
 
 Además de lo anterior, la app admite proveedores de **RapidAPI** como respaldo:
@@ -185,6 +209,17 @@ el sitio donde cabe la casa dependen de la forma de la parcela, no de un
 rectángulo equivalente. Si el Catastro no responde o no hay parcela en ese punto,
 se dibuja el rectángulo y **se dice por qué**. La superficie oficial puede además
 sustituir a la tecleada, porque es la que usarán notaría, registro y el ITP.
+
+**Punto de partida.** El simulador arranca en Noja (Cantabria) y ofrece presets
+de costa y montaña, para poder probarlo sin teclear coordenadas. Cada preset
+lleva su comunidad autónoma, de modo que el ITP de la compra sale bien desde el
+primer cálculo.
+
+**Vista 3D.** Sol con la posición real para la latitud y la fecha, así que las
+sombras dicen algo: se ve si la terraza queda soleada, que es el criterio con el
+que se eligió dónde colocar la casa. Materiales con textura procedural (césped,
+tarima, grava), cubierta con alero y peto, ventanal con carpintería, barandilla
+en la terraza y arbolado de dos especies.
 
 **Cuatro vistas del resultado**: plano acotado en SVG, vista 3D orbitable,
 la implantación sobre el mapa (parcela, área edificable, casa, terraza, piscina y

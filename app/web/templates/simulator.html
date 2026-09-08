@@ -15,24 +15,41 @@
     {% if listing %}<input type="hidden" name="listing_id" value="{{ listing.id }}">{% endif %}
 
     <h3>Parcela</h3>
+    {% if presets and not listing %}
+    <p class="note" style="margin-top:-4px">
+      Punto de partida. Al simular se carga la parcela real del Catastro en esas coordenadas.
+    </p>
+    <div class="preset-row">
+      {% for p in presets %}
+        <button type="button" class="preset{{ ' active' if p.id == preset.id }}"
+                data-lat="{{ p.lat }}" data-lon="{{ p.lon }}" data-ccaa="{{ p.ccaa }}"
+                data-price="{{ p.typical_price_eur | round | int }}"
+                data-area="{{ p.typical_area_m2 | round | int }}"
+                title="{{ p.note }}">
+          {{ '🏖' if p.zone_type == 'costa' else '⛰' }} {{ p.name }}
+          <span class="preset-region">{{ p.region }}</span>
+        </button>
+      {% endfor %}
+    </div>
+    {% endif %}
     <div class="filters">
       <div><label>Precio del terreno (€)</label>
         <input type="number" name="land_price_eur" step="500" required
-               value="{{ form.land_price_eur if form else (listing.price_eur | round | int if listing else 45000) }}"></div>
+               value="{{ form.land_price_eur if form else (listing.price_eur | round | int if listing else (preset.typical_price_eur | round | int)) }}"></div>
       <div><label>Superficie (m²)</label>
         <input type="number" name="parcel_area_m2" step="10" required
-               value="{{ form.parcel_area_m2 if form else (listing.area_m2 | round | int if listing else 900) }}"></div>
+               value="{{ form.parcel_area_m2 if form else (listing.area_m2 | round | int if listing else (preset.typical_area_m2 | round | int)) }}"></div>
       <div><label>Latitud</label>
         <input type="number" name="lat" step="0.000001" required
-               value="{{ form.lat if form else (listing.lat if listing else 36.7213) }}"></div>
+               value="{{ form.lat if form else (listing.lat if listing else preset.lat) }}"></div>
       <div><label>Longitud</label>
         <input type="number" name="lon" step="0.000001" required
-               value="{{ form.lon if form else (listing.lon if listing else -4.4214) }}"></div>
+               value="{{ form.lon if form else (listing.lon if listing else preset.lon) }}"></div>
       <div>
         <label>Comunidad autónoma (fiscalidad)</label>
         <select name="ccaa">
           {% for c in ['Andalucia','Aragon','Asturias','Baleares','Canarias','Cantabria','Castilla-La Mancha','Castilla y Leon','Cataluna','Comunidad Valenciana','Extremadura','Galicia','La Rioja','Madrid','Murcia','Navarra','Pais Vasco'] %}
-            <option value="{{ c }}" {{ 'selected' if (form.ccaa if form else 'Andalucia') == c }}>{{ c }}</option>
+            <option value="{{ c }}" {{ 'selected' if (form.ccaa if form else preset.ccaa) == c }}>{{ c }}</option>
           {% endfor %}
         </select>
       </div>
@@ -139,6 +156,19 @@
   </form>
 
   <script>
+    document.querySelectorAll('.preset').forEach(function (boton) {
+      boton.addEventListener('click', function () {
+        const f = boton.closest('form');
+        f.lat.value = boton.dataset.lat;
+        f.lon.value = boton.dataset.lon;
+        f.land_price_eur.value = boton.dataset.price;
+        f.parcel_area_m2.value = boton.dataset.area;
+        f.ccaa.value = boton.dataset.ccaa;
+        document.querySelectorAll('.preset').forEach(function (b) { b.classList.remove('active'); });
+        boton.classList.add('active');
+      });
+    });
+
     // La descarga la hace el servidor: enlazar la imagen de la tienda daría
     // fotos rotas, porque rechazan las peticiones que no vienen de su web.
     async function traerFoto(boton) {

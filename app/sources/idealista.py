@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 import httpx
 
-from app.sources.base import BaseSource, SourceError, SourceStatus
+from app.sources.base import BaseSource, SourceBlocked, SourceError, SourceStatus
 
 # La API acepta como mucho 50 resultados por pagina.
 MAX_ITEMS_PER_PAGE = 50
@@ -168,8 +168,8 @@ class IdealistaSource(BaseSource):
             self.get_token(force=True)
         except SourceError as exc:
             return self._status("needs_credentials", str(exc))
-        except httpx.ProxyError as exc:
-            return self._status("unavailable", f"Bloqueado por el proxy de salida: {exc}")
+        except SourceBlocked as exc:
+            return self._status("unavailable", str(exc))
         except httpx.HTTPError as exc:
             return self._status("error", f"{type(exc).__name__}: {exc}")
         latency = int((time.perf_counter() - started) * 1000)
