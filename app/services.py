@@ -249,13 +249,20 @@ def run_full_simulation(
     # parcela determina dónde cabe la casa y cuánto retranqueo queda.
     if not ring and use_cadastre:
         cadastre["attempted"] = True
+        feature = None
         try:
-            feature = CatastroSource().parcel_at(lat, lon)
-        except SourceError as exc:
-            cadastre["error"] = str(exc)[:200]
+            detail = CatastroSource().parcel_at_detail(lat, lon)
         except Exception as exc:  # una caída del Catastro no debe tumbar la simulación
             cadastre["error"] = f"{type(exc).__name__}: {exc}"[:200]
         else:
+            feature = detail.get("feature")
+            cadastre["steps"] = detail.get("steps", [])
+            if detail.get("used_nearby"):
+                cadastre["used_nearby"] = True
+                cadastre["distance_m"] = detail.get("distance_m")
+            if not feature and detail.get("reason"):
+                cadastre["error"] = detail["reason"]
+        if True:
             if feature:
                 ring = _extract_ring(feature)
                 if ring:
@@ -293,6 +300,12 @@ def run_full_simulation(
         )
     elif cadastre.get("found"):
         detalle = f"referencia {cadastre.get('cadastral_ref')}"
+        if cadastre.get("used_nearby"):
+            distancia = cadastre.get("distance_m")
+            detalle += (
+                "; el punto no cae dentro de ninguna parcela, así que se usa la "
+                f"más cercana{f', a {distancia:.0f} m' if distancia else ''}"
+            )
         if cadastre.get("area_replaced_from"):
             detalle += (
                 f"; se usa su superficie oficial de {parcel_area_m2:.0f} m² en lugar "

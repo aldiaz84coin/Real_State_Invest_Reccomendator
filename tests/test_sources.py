@@ -1531,3 +1531,99 @@ class TestSubastasBoe:
         assert self._source().parse_result_ids(
             "referencia SUB-NE-2026-000987 publicada"
         ) == ["SUB-NE-2026-000987"]
+
+
+class TestCatastroConRespaldo:
+    """Un punto puede caer en un vial, en marisma o en dominio público y no
+    tener parcela, aunque haya suelo alrededor. Antes eso dejaba la simulación
+    sin geometría real; ahora se busca en el entorno."""
+
+    OK = """<consulta_coordenadas><control><cucoor>1</cucoor><cuerr>0</cuerr></control>
+      <coordenadas><coord><pc><pc1>39047A007</pc1><pc2>001230000XY</pc2></pc>
+      <ldt>NOJA</ldt></coord></coordenadas></consulta_coordenadas>"""
+
+    VACIO = ("<consulta_coordenadas><control><cucoor>0</cucoor><cuerr>0</cuerr>"
+             "</control></consulta_coordenadas>")
+
+    ERROR = """<consulta_coordenadas><control><cucoor>0</cucoor><cuerr>1</cuerr></control>
+      <lerr><err><cod>13</cod><des>EL SRS NO ES VALIDO</des></err></lerr>
+      </consulta_coordenadas>"""
+
+    CERCANAS = """<consulta_coordenadas_distancias><coordd><lpcd>
+      <pcd><pc><pc1>39047A007</pc1><pc2>001230000XY</pc2></pc><dis>12</dis><ldt>A</ldt></pcd>
+      <pcd><pc><pc1>39047A007</pc1><pc2>001240000XZ</pc2></pc><dis>4</dis><ldt>B</ldt></pcd>
+      </lpcd></coordd></consulta_coordenadas_distancias>"""
+
+    def test_lee_la_referencia(self):
+        assert CatastroSource.parse_ref(self.OK) == "39047A007001230000XY"
+
+    def test_un_punto_sin_parcela_devuelve_none(self):
+        assert CatastroSource.parse_ref(self.VACIO) is None
+
+    def test_un_error_dentro_de_un_200_no_pasa_por_falta_de_parcela(self):
+        """El servicio responde 200 con el motivo en el cuerpo. Ignorarlo hacía
+        que un fallo de parámetros pareciera «aquí no hay parcela»."""
+        from app.sources.base import SourceError
+
+        with pytest.raises(SourceError, match="SRS NO ES VALIDO"):
+            CatastroSource.parse_ref(self.ERROR)
+
+    def test_las_cercanas_salen_ordenadas_por_distancia(self):
+        parcelas = CatastroSource.parse_refs_near(self.CERCANAS)
+        assert [p["distance_m"] for p in parcelas] == [4.0, 12.0]
+        assert parcelas[0]["cadastral_ref"] == "39047A007001240000XZ"
+
+    def test_sin_parcelas_cercanas(self):
+        assert CatastroSource.parse_refs_near(
+            "<consulta_coordenadas_distancias/>") == []
+
+    def test_recurre_a_la_cercana_cuando_el_punto_no_tiene_parcela(self, monkeypatch):
+        source = CatastroSource()
+
+        def fake(self, method, url, **kw):
+            if "Consulta_RCCOOR_Distancia" in url:
+                cuerpo = TestCatastroConRespaldo.CERCANAS
+            elif "Consulta_RCCOOR" in url:
+                cuerpo = TestCatastroConRespaldo.VACIO
+            else:   # el WFS de geometría
+                cuerpo = ('<FeatureCollection><posList>43.4 -3.5 43.5 -3.5 43.5 -3.4'
+                          '</posList></FeatureCollection>')
+            return httpx.Response(200, text=cuerpo, request=httpx.Request(method, url))
+
+        monkeypatch.setattr(httpx.Client, "request", fake)
+        detalle = source.parcel_at_detail(43.4869, -3.5290)
+        assert detalle["used_nearby"] is True
+        assert detalle["distance_m"] == 4.0
+        assert detalle["cadastral_ref"] == "39047A007001240000XZ"
+
+    def test_informa_de_cada_paso_intentado(self, monkeypatch):
+        """«No hay parcela» podía significar tres cosas distintas."""
+        source = CatastroSource()
+        monkeypatch.setattr(
+            httpx.Client, "request",
+            lambda self, method, url, **kw: httpx.Response(
+                200,
+                text=(TestCatastroConRespaldo.CERCANAS
+                      if "Distancia" in url else TestCatastroConRespaldo.VACIO),
+                request=httpx.Request(method, url),
+            ),
+        )
+        detalle = source.parcel_at_detail(43.4869, -3.5290)
+        pasos = [p["step"] for p in detalle["steps"]]
+        assert pasos == ["exacta", "cercanas"]
+        assert detalle["steps"][1]["found"] == 2
+
+    def test_cuando_no_hay_nada_explica_el_motivo(self, monkeypatch):
+        source = CatastroSource()
+        monkeypatch.setattr(
+            httpx.Client, "request",
+            lambda self, method, url, **kw: httpx.Response(
+                200,
+                text=("<consulta_coordenadas_distancias/>" if "Distancia" in url
+                      else TestCatastroConRespaldo.VACIO),
+                request=httpx.Request(method, url),
+            ),
+        )
+        detalle = source.parcel_at_detail(0.0, 0.0)
+        assert detalle["feature"] is None
+        assert "agua" in detalle["reason"] or "vial" in detalle["reason"]
