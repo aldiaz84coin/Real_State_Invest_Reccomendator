@@ -1,9 +1,20 @@
 """Esquemas de entrada y salida de la API."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
+
+
+def _empty_to_none(value: Any) -> Any:
+    """Un campo de formulario en blanco significa «sin valor», no un error."""
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+OptionalFloat = Annotated[float | None, BeforeValidator(_empty_to_none)]
+OptionalInt = Annotated[int | None, BeforeValidator(_empty_to_none)]
 
 
 class SimulationRequest(BaseModel):
@@ -55,12 +66,12 @@ class OpportunityQuery(BaseModel):
 
     q: str | None = None
     province: str | None = None
-    min_area_m2: float | None = Field(default=300, ge=0)
-    max_area_m2: float | None = Field(default=None, ge=0)
-    max_price_eur: float | None = Field(default=None, ge=0)
-    min_discount_pct: float = Field(default=20.0, ge=0, le=95)
-    max_beach_km: float | None = Field(default=None, ge=0)
-    max_mountain_km: float | None = Field(default=None, ge=0)
+    min_area_m2: OptionalFloat = Field(default=300, ge=0)
+    max_area_m2: OptionalFloat = Field(default=None, ge=0)
+    max_price_eur: OptionalFloat = Field(default=None, ge=0)
+    min_discount_pct: OptionalFloat = Field(default=20.0, ge=0, le=95)
+    max_beach_km: OptionalFloat = Field(default=None, ge=0)
+    max_mountain_km: OptionalFloat = Field(default=None, ge=0)
     require_rising_trend: bool = True
     limit: int = Field(default=50, ge=1, le=500)
 
