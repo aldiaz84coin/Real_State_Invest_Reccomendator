@@ -1471,17 +1471,24 @@ class TestSubastasBoe:
         """La forma exacta de la búsqueda del portal no está documentada, así
         que se prueban varias en vez de fijar una sola y darla por buena."""
         estrategias = self._source()().search_strategies("Cantabria", 40)
-        nombres = [n for n, _ in estrategias]
+        nombres = [n for n, _, _ in estrategias]
         assert len(nombres) >= 4
-        assert nombres[-1] == "sin-filtros"      # la última sirve de sonda
+        assert any("sin-filtros" in n for n in nombres)   # sonda del portal
+
+    def test_el_listado_se_pide_a_su_propia_ruta(self):
+        """El formulario devolvía HTTP 200 y cero subastas: no es el listado."""
+        estrategias = self._source()().search_strategies("Cantabria", 40)
+        rutas = [ruta for _, ruta, _ in estrategias]
+        assert rutas[0] == "consultas_subastas_ava.php"
+        assert "subastas_ava.php" in rutas      # se conserva como respaldo
 
     def test_la_provincia_entra_en_los_filtros(self):
-        estrategias = dict(self._source()().search_strategies("Cantabria", 40))
-        assert "39" in estrategias["avanzada"].values()
+        params = {n: p for n, _, p in self._source()().search_strategies("Cantabria", 40)}
+        assert "39" in params["listado"].values()
 
     def test_sin_provincia_no_se_filtra_por_ella(self):
-        estrategias = dict(self._source()().search_strategies(None, 40))
-        assert "BIEN.PROVINCIA" not in estrategias["avanzada"].values()
+        params = {n: p for n, _, p in self._source()().search_strategies(None, 40)}
+        assert "BIEN.PROVINCIA" not in params["listado"].values()
 
     def test_se_queda_con_la_primera_estrategia_que_devuelve_algo(self, monkeypatch):
         from app.sources.boe import BoeSubastasSource
@@ -1627,3 +1634,110 @@ class TestCatastroConRespaldo:
         detalle = source.parcel_at_detail(0.0, 0.0)
         assert detalle["feature"] is None
         assert "agua" in detalle["reason"] or "vial" in detalle["reason"]
+
+
+class TestIneTurismo:
+    """InsideAirbnb no cubre España; el INE sí, y por la misma API ya usada."""
+
+    def test_separa_territorio_e_indicador(self):
+        from app.sources.tourism import IneTourismSource
+
+        crudo = [
+            {"Nombre": "Noja. Viviendas turísticas. ",
+             "Data": [{"Anyo": 2025, "FK_Periodo": 11, "Valor": 412.0}]},
+            {"Nombre": "Noja. Plazas. ",
+             "Data": [{"Anyo": 2025, "FK_Periodo": 11, "Valor": 2130.0}]},
+        ]
+        parseado = IneTourismSource.parse_housing(crudo)
+        assert parseado["Noja"]["dwellings"] == 412.0
+        assert parseado["Noja"]["beds"] == 2130.0
+        assert parseado["Noja"]["period"] == 2025
+
+    def test_se_queda_con_el_periodo_mas_reciente(self):
+        from app.sources.tourism import IneTourismSource
+
+        crudo = [{"Nombre": "Llanes. Plazas. ", "Data": [
+            {"Anyo": 2024, "FK_Periodo": 5, "Valor": 900.0},
+            {"Anyo": 2025, "FK_Periodo": 11, "Valor": 1200.0},
+        ]}]
+        assert IneTourismSource.parse_housing(crudo)["Llanes"]["beds"] == 1200.0
+
+    def test_una_serie_sin_indicador_conocido_se_ignora(self):
+        """El INE mete indicadores que no interesan en la misma tabla."""
+        from app.sources.tourism import IneTourismSource
+
+        crudo = [{"Nombre": "Noja. Otro indicador cualquiera. ",
+                  "Data": [{"Anyo": 2025, "Valor": 1.0}]}]
+        assert IneTourismSource.parse_housing(crudo) == {}
+
+    def test_una_serie_sin_datos_no_rompe(self):
+        from app.sources.tourism import IneTourismSource
+
+        crudo = [{"Nombre": "Noja. Plazas. ", "Data": []},
+                 {"Nombre": "Noja. Viviendas turísticas. ",
+                  "Data": [{"Anyo": 2025, "Valor": None}]}]
+        assert IneTourismSource.parse_housing(crudo) == {}
+
+
+class TestEstimacionTuristicaPorIntensidad:
+    """Sin datos de precio, la intensidad turística al menos distingue zonas."""
+
+    def _municipio(self, plazas, viviendas, poblacion):
+        from app.models import Municipality
+
+        return Municipality(
+            ine_code="39047", name="Noja", province="Cantabria", ccaa="Cantabria",
+            lat=43.48, lon=-3.53, population=poblacion,
+            tourist_beds=plazas, tourist_dwellings=viviendas,
+            tourist_data_period="2025",
+        )
+
+    def test_un_destino_turistico_sale_por_encima_del_respaldo(self):
+        from app.services import FALLBACK_ADR_EUR, _rental_from_ine
+
+        estimacion = _rental_from_ine(self._municipio(2130, 412, 2600))
+        assert estimacion["adr_eur"] > FALLBACK_ADR_EUR
+        assert estimacion["source"] == "ine_turismo"
+        # No es un precio observado y la ficha no debe presentarlo como tal.
+        assert estimacion["is_real_data"] is False
+        assert "plazas" in estimacion["basis"]
+
+    def test_un_pueblo_sin_turismo_no_recibe_estimacion(self):
+        from app.services import _rental_from_ine
+
+        assert _rental_from_ine(self._municipio(2, 1, 4000)) is None
+
+    def test_sin_dato_del_ine_no_inventa_nada(self):
+        from app.services import _rental_from_ine
+
+        assert _rental_from_ine(self._municipio(None, None, 2600)) is None
+
+    def test_una_ciudad_grande_no_pasa_por_destino(self):
+        """Mil plazas en Madrid no son lo mismo que mil en Noja."""
+        from app.services import _rental_from_ine
+
+        ciudad = self._municipio(1000, 300, 500000)
+        assert _rental_from_ine(ciudad) is None
+
+
+class TestFormularioDelBoe:
+    """Los parámetros del portal no están documentados: se leen del HTML."""
+
+    def test_saca_los_codigos_que_admite_cada_campo(self):
+        from app.sources.boe import _FormParser
+
+        parser = _FormParser()
+        parser.feed(
+            '<form><select name="dato[2]">'
+            '<option value="">Todas</option>'
+            '<option value="39">CANTABRIA</option>'
+            '<option value="45">TOLEDO</option>'
+            "</select>"
+            '<input type="hidden" name="accion" value="Buscar">'
+            '<input type="submit" name="enviar"></form>'
+        )
+        assert [o["value"] for o in parser.fields["dato[2]"]] == ["", "39", "45"]
+        assert parser.fields["dato[2]"][1]["label"] == "CANTABRIA"
+        assert "accion" in parser.fields
+        # El botón de enviar no es un parámetro de búsqueda.
+        assert "enviar" not in parser.fields
