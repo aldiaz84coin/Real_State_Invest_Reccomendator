@@ -127,6 +127,53 @@ class BoeSubastasSource(BaseSource):
     def base_url(self) -> str:
         return "https://subastas.boe.es"
 
+    def search_strategies(
+        self, province: str | None, max_results: int
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Juegos de parametros a probar, del mas especifico al mas simple.
+
+        La forma exacta de la busqueda del portal no esta documentada y sus
+        formularios han cambiado con los anos, asi que en vez de fijar una sola
+        se prueban varias y se usa la primera que devuelva subastas. La ultima
+        es deliberadamente minima: si ninguna funciona, al menos dice si el
+        portal responde.
+        """
+        code = self.province_code(province)
+        estrategias: list[tuple[str, dict[str, Any]]] = []
+
+        base: dict[str, Any] = {
+            "accion": "Buscar_Simple",
+            "campo[0]": "SUBASTA.ESTADO",
+            "dato[0]": "EJ",
+            "campo[1]": "BIEN.TIPO",
+            "dato[1]": "I",
+            "sort_field[0]": "SUBASTA.FECHA_FIN_YMD",
+            "sort_order[0]": "desc",
+            "page_hits": min(max_results, 50),
+        }
+        if code:
+            base["campo[2]"] = "BIEN.PROVINCIA"
+            base["dato[2]"] = code
+        estrategias.append(("avanzada", dict(base)))
+
+        # Igual pero con la accion que usa el boton del formulario.
+        buscar = dict(base, accion="Buscar")
+        estrategias.append(("avanzada-buscar", buscar))
+
+        # La accion de paginacion, que en este portal tambien lista.
+        estrategias.append(("avanzada-mas", dict(base, accion="Mas")))
+
+        # Busqueda simple: sin filtros de tipo, por si los campos han cambiado.
+        simple: dict[str, Any] = {"accion": "Buscar_Simple", "page_hits": 50}
+        if code:
+            simple["campo[0]"] = "BIEN.PROVINCIA"
+            simple["dato[0]"] = code
+        estrategias.append(("simple", simple))
+
+        # Sin ningun parametro: sirve para saber si el portal esta vivo.
+        estrategias.append(("sin-filtros", {}))
+        return estrategias
+
     def search(
         self,
         province: str | None = None,
@@ -134,26 +181,45 @@ class BoeSubastasSource(BaseSource):
         only_land: bool = True,
         max_results: int = 40,
     ) -> list[str]:
-        """Devuelve los identificadores de subasta que encajan con el filtro."""
-        params: dict[str, Any] = {
-            "accion": "Buscar",
-            "campo[0]": "SUBASTA.ESTADO",
-            "dato[0]": "EJ",             # en ejecución: sólo subastas vivas
-            "campo[1]": "BIEN.TIPO",
-            "dato[1]": "I",              # inmuebles
-            "sort_field[0]": "SUBASTA.FECHA_FIN_YMD",
-            "sort_order[0]": "desc",
-            "page_hits": min(max_results, 50),
-        }
-        code = self.province_code(province)
-        if code:
-            params["campo[2]"] = "BIEN.PROVINCIA"
-            params["dato[2]"] = code
+        """Identificadores de subasta que encajan con el filtro."""
+        for _, ids, _ in self.search_attempts(province, max_results):
+            if ids:
+                return ids[:max_results]
+        return []
 
-        response = self.request("GET", f"{self.base_url}/subastas_ava.php", params=params)
-        if response.status_code != 200:
-            raise SourceError(f"Subastas del BOE: HTTP {response.status_code}")
-        return self.parse_result_ids(response.text)[:max_results]
+    def search_attempts(
+        self, province: str | None = None, max_results: int = 40
+    ) -> list[tuple[str, list[str], dict[str, Any]]]:
+        """Cada estrategia probada con lo que devolvio. Lo usa el diagnostico."""
+        resultados: list[tuple[str, list[str], dict[str, Any]]] = []
+        for nombre, params in self.search_strategies(province, max_results):
+            info: dict[str, Any] = {"params": {k: str(v) for k, v in params.items()}}
+            try:
+                response = self.request(
+                    "GET", f"{self.base_url}/subastas_ava.php", params=params
+                )
+            except SourceError as exc:
+                info["error"] = str(exc)[:300]
+                resultados.append((nombre, [], info))
+                continue
+
+            info["http_status"] = response.status_code
+            info["bytes"] = len(response.text)
+            info["final_url"] = str(response.url)
+            if response.status_code != 200:
+                resultados.append((nombre, [], info))
+                continue
+
+            ids = self.parse_result_ids(response.text)
+            info["link_patterns"] = _count_patterns(response.text)
+            if not ids:
+                # Sin el cuerpo no hay forma de saber que devolvio el portal, y
+                # remitir a otro diagnostico seria dar vueltas.
+                info["body_excerpt"] = _excerpt(response.text)
+            resultados.append((nombre, ids, info))
+            if ids:
+                break
+        return resultados
 
     @staticmethod
     def province_code(province: str | None) -> str | None:
@@ -165,10 +231,20 @@ class BoeSubastasSource(BaseSource):
 
     @staticmethod
     def parse_result_ids(html: str) -> list[str]:
-        """Identificadores de subasta presentes en una página de resultados."""
-        # Se buscan por patrón y no por estructura: el listado cambia de
-        # maquetación con frecuencia, pero el identificador tiene forma fija.
-        found = re.findall(r"idSub=([A-Z0-9\-]+)", html)
+        """Identificadores de subasta presentes en una página de resultados.
+
+        Se buscan por patrón y no por estructura: el listado cambia de
+        maquetación con frecuencia, pero el identificador tiene forma fija
+        (SUB-JA-2026-123456). Se aceptan varias formas de enlace porque el
+        portal no siempre usa el mismo nombre de parámetro.
+        """
+        found: list[str] = []
+        for pattern in (r"idSub=([A-Z]{3}-[A-Z]{2}-\d{4}-\d+)",
+                        r"idSub=([A-Z0-9\-]{6,})",
+                        r"\b(SUB-[A-Z]{2}-\d{4}-\d+)\b"):
+            found = re.findall(pattern, html)
+            if found:
+                break
         unique: list[str] = []
         for identifier in found:
             if identifier not in unique:
@@ -248,6 +324,26 @@ class BoeSubastasSource(BaseSource):
 
     def check(self) -> SourceStatus:
         return self._timed_probe(f"{self.base_url}/subastas_ava.php")
+
+
+def _count_patterns(html: str) -> dict[str, int]:
+    """Cuantos enlaces de cada forma hay: dice si la pagina es de resultados."""
+    return {
+        "idSub": len(re.findall(r"idSub=", html)),
+        "detalleSubasta": len(re.findall(r"detalleSubasta", html)),
+        "SUB-xx-": len(re.findall(r"SUB-[A-Z]{2}-\d{4}", html)),
+        "formulario": len(re.findall(r"<form", html, re.IGNORECASE)),
+        "sin_resultados": len(re.findall(r"no se han encontrado|sin resultados",
+                                         html, re.IGNORECASE)),
+    }
+
+
+def _excerpt(html: str, limit: int = 1200) -> str:
+    """Texto visible de la pagina, sin etiquetas, para poder leerlo de un vistazo."""
+    without_scripts = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html,
+                             flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", without_scripts)
+    return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
 def _normalize(text: str) -> str:

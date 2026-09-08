@@ -1466,3 +1466,68 @@ class TestSubastasBoe:
         from app.sources.registry import build_sources
 
         assert "boe_subastas" in {s.key for s in build_sources()}
+
+    def test_prueba_varias_estrategias_de_busqueda(self):
+        """La forma exacta de la búsqueda del portal no está documentada, así
+        que se prueban varias en vez de fijar una sola y darla por buena."""
+        estrategias = self._source()().search_strategies("Cantabria", 40)
+        nombres = [n for n, _ in estrategias]
+        assert len(nombres) >= 4
+        assert nombres[-1] == "sin-filtros"      # la última sirve de sonda
+
+    def test_la_provincia_entra_en_los_filtros(self):
+        estrategias = dict(self._source()().search_strategies("Cantabria", 40))
+        assert "39" in estrategias["avanzada"].values()
+
+    def test_sin_provincia_no_se_filtra_por_ella(self):
+        estrategias = dict(self._source()().search_strategies(None, 40))
+        assert "BIEN.PROVINCIA" not in estrategias["avanzada"].values()
+
+    def test_se_queda_con_la_primera_estrategia_que_devuelve_algo(self, monkeypatch):
+        from app.sources.boe import BoeSubastasSource
+
+        source = BoeSubastasSource()
+        llamadas = {"n": 0}
+
+        def fake(self, method, url, **kw):
+            llamadas["n"] += 1
+            # Sólo la segunda estrategia devuelve resultados.
+            cuerpo = ('<a href="detalleSubasta.php?idSub=SUB-JA-2026-1">x</a>'
+                      if llamadas["n"] == 2 else "<html>sin resultados</html>")
+            return httpx.Response(200, text=cuerpo, request=httpx.Request(method, url))
+
+        monkeypatch.setattr(httpx.Client, "request", fake)
+        assert source.search("Cantabria") == ["SUB-JA-2026-1"]
+        assert llamadas["n"] == 2      # no sigue probando una vez acierta
+
+    def test_cuando_nada_funciona_informa_de_cada_intento(self, monkeypatch):
+        """Decir «0 subastas» sin más no permite saber qué falló."""
+        from app.sources.boe import BoeSubastasSource
+
+        source = BoeSubastasSource()
+        monkeypatch.setattr(
+            httpx.Client, "request",
+            lambda self, method, url, **kw: httpx.Response(
+                200, text="<html><body><form>Buscador de subastas</form></body></html>",
+                request=httpx.Request(method, url),
+            ),
+        )
+        intentos = source.search_attempts("Cantabria")
+        assert len(intentos) == 5        # probó todas
+        for _, ids, info in intentos:
+            assert ids == []
+            assert info["http_status"] == 200
+            assert info["link_patterns"]["formulario"] == 1
+            assert "Buscador de subastas" in info["body_excerpt"]
+
+    def test_el_extracto_quita_etiquetas_y_scripts(self):
+        from app.sources.boe import _excerpt
+
+        html = "<html><script>var a=1;</script><body><p>Texto  visible</p></body></html>"
+        assert _excerpt(html) == "Texto visible"
+
+    def test_reconoce_el_identificador_en_texto_suelto(self):
+        """No todos los listados lo ponen dentro de un enlace."""
+        assert self._source().parse_result_ids(
+            "referencia SUB-NE-2026-000987 publicada"
+        ) == ["SUB-NE-2026-000987"]
