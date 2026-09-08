@@ -21,7 +21,8 @@ Esta fue la primera comprobación del proyecto y condiciona todo lo demás.
 | **INE** | Sí, libre | API Tempus3 en JSON, sin clave. |
 | **Ministerio de Vivienda (MIVAU)** | Sí, libre | Descargas CSV/XLSX de precio de suelo y transacciones. |
 | **OpenStreetMap** | Sí, libre | Overpass (playa, montaña, esquí, turismo, patrimonio) y Nominatim. |
-| **InsideAirbnb** | Sí, libre | Volcados CSV de anuncios reales de Airbnb con precio y disponibilidad. |
+| **InsideAirbnb** | Sí, libre | Volcados CSV de anuncios reales de Airbnb con precio y disponibilidad. **Sólo cubre una docena de ciudades españolas.** |
+| **INE · viviendas turísticas** | Sí, libre | Estadística experimental: viviendas y plazas de alquiler turístico **de todos los municipios de España**, medidas rastreando las plataformas. Tablas Tempus3 39363 (municipios) y 39364 (provincias). |
 | **AirROI** | Sí, de pago | Complemento opcional de pago por uso. |
 | **AirDNA** | Descartado | Su API sólo se comercializa con contrato *enterprise* (del orden de 50.000 $/año). |
 
@@ -148,8 +149,21 @@ desembolso completo:
 
 ### Plan de negocio del alquiler turístico
 Parte de **tarifa y ocupación reales de la zona** (InsideAirbnb, opcionalmente
-AirROI), no de porcentajes inventados. Si no hay dato para la zona, usa valores
-de respaldo conservadores y lo dice explícitamente.
+AirROI), no de porcentajes inventados.
+
+Como InsideAirbnb sólo publica volcados de una docena de ciudades españolas
+—y no de la costa cantábrica ni de los pueblos de montaña, que es el perfil
+que busca esta aplicación—, hay una cadena de respaldo en tres escalones:
+
+1. **InsideAirbnb** del propio municipio, o del municipio con datos más
+   cercano dentro de 40 km. Es el único con precio por anuncio y calendario.
+2. **Intensidad turística del INE**: plazas de alquiler turístico por cada mil
+   habitantes del municipio, en tramos. No es un precio observado y se marca
+   como estimación, pero distingue Noja de un pueblo del interior, que con los
+   valores de respaldo salían idénticos.
+3. **Valores de respaldo conservadores**, dicho explícitamente.
+
+La ficha dice siempre en qué escalón está y con qué muestra.
 
 Produce cuenta de explotación anual, estacionalidad mes a mes según el tipo de
 zona (costa, montaña, ciudad o rural), proyección a diez años con amortización
@@ -327,6 +341,9 @@ el código va contra SQLAlchemy y no asume el motor.
 curl -X POST localhost:8000/api/ingest/pois \
   -H 'Content-Type: application/json' \
   -d '{"lat":36.72,"lon":-4.42,"radius_km":40}'
+
+# Demanda turística de todos los municipios de España (libre, sin clave)
+curl -X POST localhost:8000/api/ingest/ine-turismo
 
 # Terrenos en venta (requiere clave de Idealista)
 curl -X POST localhost:8000/api/ingest/listings \

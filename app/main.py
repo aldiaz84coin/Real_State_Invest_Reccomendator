@@ -48,6 +48,7 @@ from app.sources.osm import OverpassSource
 from app.sources.rapidapi import extract_listings, iter_rapidapi_sources
 from app.sources.registry import check_all
 from app.sources.rental import InsideAirbnbSource
+from app.sources.tourism import TABLE_HOUSING_PROVINCES, IneTourismSource
 
 def _empty_to_none(value: Any) -> Any:
     """Un campo de formulario que se deja en blanco llega como cadena vacía.
@@ -919,6 +920,82 @@ def api_ingest_boe(
         "skipped_not_land": skipped_not_land,
         "skipped_incomplete": skipped_incomplete,
         "errors": errors[:10],
+    }
+
+
+@app.post("/api/ingest/ine-turismo", tags=["ingesta"])
+def api_ingest_ine_tourism(
+    municipal: bool = Query(True, description="Por municipio; si no, por provincia"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Carga la oferta de alquiler turístico del INE para toda España.
+
+    InsideAirbnb sólo publica volcados de una docena de ciudades españolas, de
+    modo que en la costa cantábrica o en un pueblo de montaña —el perfil que
+    busca esta aplicación— no había ningún dato. El INE mide lo mismo en todos
+    los municipios rastreando las plataformas, y es gratis y sin clave.
+    """
+    source = IneTourismSource()
+    try:
+        registros = source.tourist_housing(municipal=municipal)
+    except SourceError as exc:
+        raise HTTPException(502, str(exc)) from None
+
+    if not registros:
+        raise HTTPException(
+            422,
+            "El INE respondió pero no se ha reconocido ningún indicador. "
+            "Revisa /api/sources/ine-turismo/probe.",
+        )
+
+    actualizados = sin_municipio = 0
+    for registro in registros.values():
+        municipality = db.execute(
+            select(Municipality).where(Municipality.name.ilike(registro["name"].strip()))
+        ).scalars().first()
+        if municipality is None:
+            sin_municipio += 1
+            continue
+        municipality.tourist_dwellings = int(registro.get("dwellings") or 0) or None
+        municipality.tourist_beds = int(registro.get("beds") or 0) or None
+        municipality.tourist_data_period = str(registro.get("period") or "")
+        actualizados += 1
+    db.commit()
+
+    log_operation("ingesta-ine-turismo", territorios=len(registros),
+                  actualizados=actualizados, sin_municipio=sin_municipio)
+    return {
+        "territories": len(registros),
+        "updated": actualizados,
+        "unmatched": sin_municipio,
+        "hint": (
+            "Los territorios sin municipio en la base no se pierden: se cargan "
+            "cuando exista el municipio. Carga municipios antes para aprovecharlos."
+        ),
+    }
+
+
+@app.get("/api/sources/ine-turismo/probe", tags=["fuentes"])
+def api_probe_ine_tourism(
+    table: str | None = Query(None, description="Tabla Tempus3 a inspeccionar"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Qué devuelve de verdad el INE, para depurar sin adivinar."""
+    source = IneTourismSource()
+    identificador = table or TABLE_HOUSING_PROVINCES
+    try:
+        crudo = source.housing_table(identificador, last_n=1)
+    except SourceError as exc:
+        return {"table": identificador, "error": str(exc)}
+
+    parseado = source.parse_housing(crudo)
+    return {
+        "table": identificador,
+        "series": len(crudo),
+        "territories": len(parseado),
+        "first_names": [str(s.get("Nombre", ""))[:120] for s in crudo[:6]],
+        "sample": list(parseado.values())[:4],
+        "municipalities_in_db": db.scalar(select(func.count(Municipality.id))) or 0,
     }
 
 

@@ -212,6 +212,8 @@
     </p>
     <p class="note">Si prefieres cargarlas de golpe, la fuente gratuita que no necesita clave son las Subastas del BOE:</p>
     <pre class="cmd">curl -X POST "{{ request.base_url }}api/ingest/boe-subastas?province=Cantabria"</pre>
+    <p class="note">Y la demanda turística de todos los municipios, para el plan de negocio:</p>
+    <pre class="cmd">curl -X POST "{{ request.base_url }}api/ingest/ine-turismo"</pre>
     <p class="note">Y después, para puntuarlos:</p>
     <pre class="cmd">curl -X POST "{{ request.base_url }}api/analyze-all"</pre>
     <p class="note">

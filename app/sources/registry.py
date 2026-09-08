@@ -15,6 +15,7 @@ from app.sources.osm import NominatimSource, OverpassSource
 from app.sources.prices import IneSource, MivauLandPriceSource
 from app.sources.rapidapi import iter_rapidapi_sources
 from app.sources.rental import AirDnaSource, AirRoiSource, InsideAirbnbSource
+from app.sources.tourism import IneTourismSource
 
 
 def build_sources() -> list[BaseSource]:
@@ -35,6 +36,7 @@ def build_sources() -> list[BaseSource]:
         OverpassSource(),
         NominatimSource(),
         InsideAirbnbSource(),
+        IneTourismSource(),
         AirRoiSource(),
         AirDnaSource(),
     ]

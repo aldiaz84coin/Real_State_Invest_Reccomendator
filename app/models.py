@@ -45,6 +45,12 @@ class Municipality(Base):
     dist_mountain_km: Mapped[float | None] = mapped_column(Float, nullable=True)
     adr_eur: Mapped[float | None] = mapped_column(Float, nullable=True)
     occupancy_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Oferta de alquiler turistico segun la estadistica experimental del INE,
+    # que la mide rastreando las plataformas. Es la demanda turistica real del
+    # municipio, y llega a toda Espana, no solo a las ciudades grandes.
+    tourist_dwellings: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tourist_beds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tourist_data_period: Mapped[str | None] = mapped_column(String(20), nullable=True)
     metrics_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     price_points: Mapped[list["LandPricePoint"]] = relationship(

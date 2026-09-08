@@ -242,3 +242,45 @@ class TestProvincias:
 
         for provincia in ("Toledo", "Zamora", "Cuenca", "Cantabria"):
             assert BoeSubastasSource.province_code(provincia) is not None
+
+
+class TestMigracionDeColumnas:
+    """La base vive en un volumen de Fly: añadir un campo no puede romperla."""
+
+    def test_una_columna_nueva_se_anade_a_una_tabla_existente(self, tmp_path):
+        import sqlite3
+
+        from sqlalchemy import create_engine, inspect, text
+
+        ruta = tmp_path / "vieja.db"
+        # Una tabla como la que quedó desplegada antes del campo nuevo.
+        with sqlite3.connect(ruta) as conexion:
+            conexion.execute(
+                "CREATE TABLE municipalities ("
+                " id INTEGER PRIMARY KEY, ine_code VARCHAR(5), name VARCHAR(120),"
+                " province VARCHAR(80), ccaa VARCHAR(80), lat FLOAT, lon FLOAT)"
+            )
+            conexion.execute(
+                "INSERT INTO municipalities (ine_code, name, province, ccaa, lat, lon)"
+                " VALUES ('39047','Noja','Cantabria','Cantabria',43.48,-3.53)"
+            )
+
+        import app.db as capa
+
+        motor_original = capa.engine
+        capa.engine = create_engine(f"sqlite:///{ruta}")
+        try:
+            capa.init_db()
+            columnas = {c["name"] for c in inspect(capa.engine).get_columns("municipalities")}
+            assert "tourist_beds" in columnas and "population" in columnas
+            with capa.engine.connect() as conexion:
+                fila = conexion.execute(
+                    text("SELECT name, tourist_beds FROM municipalities")
+                ).one()
+            # Y el dato que ya había sigue ahí.
+            assert fila[0] == "Noja" and fila[1] is None
+
+            capa.init_db()      # idempotente: repetirlo no debe fallar
+        finally:
+            capa.engine.dispose()
+            capa.engine = motor_original

@@ -3,6 +3,7 @@
 Si algun dia se quiere Postgres/Supabase basta con cambiar DATABASE_URL:
 el resto del codigo es agnostico porque va contra SQLAlchemy.
 """
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -10,6 +11,9 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
+
+
+logger = logging.getLogger("investment")
 
 
 class Base(DeclarativeBase):
@@ -58,3 +62,32 @@ def init_db() -> None:
     from app import models  # noqa: F401  (registra los modelos en el metadata)
 
     Base.metadata.create_all(bind=engine)
+    _add_missing_columns()
+
+
+def _add_missing_columns() -> None:
+    """Anade a las tablas ya creadas las columnas nuevas del modelo.
+
+    create_all() crea tablas que faltan, pero no toca las que existen: al
+    anadir un campo, la base desplegada sobre el volumen de Fly se quedaba
+    atras y cualquier consulta reventaba con "no such column". Se limita a
+    columnas que admiten nulo, que es lo unico que SQLite deja anadir sin
+    reescribir la tabla, y es idempotente: lo que ya esta no se toca.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    existentes = set(inspector.get_table_names())
+    with engine.begin() as connection:
+        for tabla in Base.metadata.sorted_tables:
+            if tabla.name not in existentes:
+                continue
+            actuales = {c["name"] for c in inspector.get_columns(tabla.name)}
+            for columna in tabla.columns:
+                if columna.name in actuales or not columna.nullable:
+                    continue
+                tipo = columna.type.compile(engine.dialect)
+                connection.execute(
+                    text(f'ALTER TABLE "{tabla.name}" ADD COLUMN "{columna.name}" {tipo}')
+                )
+                logger.info("Columna anadida: %s.%s (%s)", tabla.name, columna.name, tipo)

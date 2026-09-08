@@ -70,6 +70,12 @@
   -d '{"lat":43.4869,"lon":-3.5290,"radius_km":40}'</pre>
       </li>
       <li>
+        <strong>Demanda turística.</strong> El INE mide la oferta de alquiler
+        turístico de todos los municipios de España, no sólo de las ciudades que
+        cubre InsideAirbnb. Gratis y sin clave:
+        <pre class="cmd">curl -X POST "{{ request.base_url }}api/ingest/ine-turismo"</pre>
+      </li>
+      <li>
         <strong>Anuncios.</strong> Lo más cómodo es hacerlo desde
         <a href="/buscar">Localizar inversión</a>: el panel «Traer candidatas
         de las fuentes» las enseña primero y tú marcas las que interesan.

@@ -180,6 +180,12 @@ def rental_market_for(
         distance, stat, muni = best
         return _rental_payload(stat, muni.name, round(distance, 1), "municipio cercano")
 
+    # Antes de rendirse: el INE mide la oferta de alquiler turistico en todos
+    # los municipios de Espana, no solo en la docena que cubre InsideAirbnb.
+    desde_ine = _rental_from_ine(municipality)
+    if desde_ine:
+        return desde_ine
+
     return {
         "adr_eur": FALLBACK_ADR_EUR,
         "occupancy_rate": FALLBACK_OCCUPANCY,
@@ -188,6 +194,57 @@ def rental_market_for(
         "reference": "Sin datos reales para la zona",
         "distance_km": None,
         "basis": "valores de respaldo conservadores",
+        "is_real_data": False,
+    }
+
+
+# Tarifa de referencia por plaza y noche, segun la intensidad turistica del
+# municipio medida en plazas de alquiler turistico por cada mil habitantes.
+# Son tramos, no una formula: con un solo indicador no se puede afinar mas, y
+# fingir precision seria peor que reconocer el rango.
+INTENSITY_TIERS: list[tuple[float, float, float, str]] = [
+    (300.0, 145.0, 0.55, "destino turistico consolidado"),
+    (120.0, 115.0, 0.48, "destino turistico claro"),
+    (40.0, 95.0, 0.42, "turismo apreciable"),
+    (10.0, 80.0, 0.35, "turismo moderado"),
+]
+
+
+def _rental_from_ine(municipality: Municipality | None) -> dict[str, Any] | None:
+    """Estima tarifa y ocupacion a partir de la oferta turistica del INE.
+
+    No es un precio observado, y se marca como estimacion: lo que aporta es
+    distinguir Noja de un pueblo del interior sin datos, que con los valores
+    de respaldo salian identicos. La intensidad se mide en plazas por cada mil
+    habitantes porque es lo que separa un destino turistico de un municipio
+    grande con algunos pisos en alquiler.
+    """
+    if municipality is None or not municipality.tourist_beds:
+        return None
+    poblacion = municipality.population or 0
+    if poblacion < 50:
+        return None
+
+    intensidad = municipality.tourist_beds * 1000.0 / poblacion
+    for umbral, adr, ocupacion, etiqueta in INTENSITY_TIERS:
+        if intensidad >= umbral:
+            break
+    else:
+        return None
+
+    return {
+        "adr_eur": adr,
+        "occupancy_rate": ocupacion,
+        "sample_size": int(municipality.tourist_dwellings or 0),
+        "source": "ine_turismo",
+        "reference": municipality.name,
+        "distance_km": 0.0,
+        "basis": (
+            f"estimacion por intensidad turistica del INE: {intensidad:.0f} plazas "
+            f"de alquiler turistico por mil habitantes ({etiqueta}), "
+            f"{int(municipality.tourist_dwellings or 0)} viviendas anunciadas"
+            + (f" en {municipality.tourist_data_period}" if municipality.tourist_data_period else "")
+        ),
         "is_real_data": False,
     }
 
