@@ -112,6 +112,11 @@ button:hover, .btn:hover { filter: brightness(1.08); }
 .alert.info { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
 .alert.warn { background: var(--warn-soft); border-color: var(--warn); }
 .alert.bad  { background: var(--danger-soft); border-color: var(--danger); }
+.alert.ok   { background: var(--accent-soft); border-color: var(--accent); }
+
+/* Una candidata que ya esta en la base se marca en gris: su casilla va
+   deshabilitada y conviene que se vea por que no se puede marcar. */
+tr.ya-guardada { opacity: .55; }
 ul.clean { list-style: none; padding: 0; margin: 0; }
 ul.clean li { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: .89rem; }
 ul.clean li:last-child { border-bottom: 0; }
@@ -207,3 +212,10 @@ ul.clean li:last-child { border-bottom: 0; }
 .preset:hover { border-color: var(--accent); }
 .preset.active { border-color: var(--accent); background: var(--accent-soft); font-weight: 650; }
 .preset-region { font-size: .74rem; color: var(--text-dim); }
+
+/* Comandos copiables en los estados vacíos */
+pre.cmd {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-size: .78rem; overflow-x: auto; margin: 6px 0 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.5;
+}

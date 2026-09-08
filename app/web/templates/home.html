@@ -59,14 +59,33 @@
   {% else %}
   <div class="card">
     <h3>Todavía no hay terrenos cargados</h3>
-    <p class="note">Para empezar, en este orden:</p>
-    <ol class="note" style="line-height:1.9">
-      <li>Comprueba el acceso a las fuentes en <a href="/fuentes">Fuentes de datos</a>.</li>
-      <li>Carga puntos de interés de una zona: <code>POST /api/ingest/pois</code> con <code>{"lat":36.72,"lon":-4.42,"radius_km":40}</code>.</li>
-      <li>Descarga terrenos: <code>POST /api/ingest/listings</code> (requiere clave de Idealista).</li>
-      <li>Puntúa todo: <code>POST /api/analyze-all</code>.</li>
+    <p class="note">
+      La búsqueda funcionará en cuanto haya datos. En este orden:
+    </p>
+    <ol class="note" style="line-height:2">
+      <li>
+        <strong>Puntos de interés</strong> — dan las distancias a playa y montaña. Gratis, sin clave:
+        <pre class="cmd">curl -X POST "{{ request.base_url }}api/ingest/pois" \
+  -H 'Content-Type: application/json' \
+  -d '{"lat":43.4869,"lon":-3.5290,"radius_km":40}'</pre>
+      </li>
+      <li>
+        <strong>Anuncios.</strong> Lo más cómodo es hacerlo desde
+        <a href="/buscar">Localizar inversión</a>: el panel «Traer candidatas
+        de las fuentes» las enseña primero y tú marcas las que interesan.
+        En una sola orden, las Subastas del BOE tampoco necesitan clave:
+        <pre class="cmd">curl -X POST "{{ request.base_url }}api/ingest/boe-subastas?province=Cantabria"</pre>
+        Con clave de Idealista, además: <code>POST /api/ingest/listings</code>.
+      </li>
+      <li>
+        <strong>Puntuar</strong> lo cargado, o el buscador no mostrará nada:
+        <pre class="cmd">curl -X POST "{{ request.base_url }}api/analyze-all"</pre>
+      </li>
     </ol>
-    <p class="note">O prueba el <a href="/simular">simulador</a> directamente introduciendo precio, superficie y coordenadas a mano.</p>
+    <p class="note">
+      El <a href="/simular">simulador</a> funciona sin nada de esto: basta con
+      precio, superficie y coordenadas.
+    </p>
   </div>
   {% endif %}
 </div>

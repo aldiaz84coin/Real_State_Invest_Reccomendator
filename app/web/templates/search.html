@@ -30,10 +30,137 @@
   </form>
 </div>
 
+
+<div class="card section">
+  <h3>Traer candidatas de las fuentes</h3>
+  <p class="note">
+    La búsqueda de arriba mira sólo lo que ya hay en la base. Esto consulta las
+    fuentes externas y te enseña lo que encuentran; tú decides qué se incorpora.
+    Las Subastas del BOE buscan por provincia; los portales, por coordenadas.
+  </p>
+  <form class="filters" method="post" action="/buscar/descubrir">
+    <input type="hidden" name="min_discount_pct" value="{{ filters.min_discount_pct }}">
+    {% if filters.require_rising_trend %}<input type="hidden" name="require_rising_trend" value="true">{% endif %}
+    {% if filters.max_beach_km %}<input type="hidden" name="max_beach_km" value="{{ filters.max_beach_km }}">{% endif %}
+    <div><label>Municipio</label><input name="q" value="{{ filters.q or '' }}" placeholder="Noja"></div>
+    <div>
+      <label>Provincia</label>
+      <select name="province">
+        <option value="">Todas</option>
+        {% for p in provinces %}<option value="{{ p }}" {{ 'selected' if filters.province == p }}>{{ p }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Latitud</label><input name="lat" value="{{ discovery.center.lat if discovery and discovery.center.lat else '' }}" placeholder="43.4869"></div>
+    <div><label>Longitud</label><input name="lon" value="{{ discovery.center.lon if discovery and discovery.center.lon else '' }}" placeholder="-3.5290"></div>
+    <div><label>Radio (km)</label><input type="number" name="radius_km" value="25" min="1" max="100" step="5"></div>
+    <div><label>Superficie mínima (m²)</label><input type="number" name="min_area_m2" value="{{ filters.min_area_m2 or '' }}" min="0" step="50"></div>
+    <div><label>Superficie máxima (m²)</label><input type="number" name="max_area_m2" value="" min="0" step="100"></div>
+    <div><label>Precio máximo (€)</label><input type="number" name="max_price_eur" value="{{ filters.max_price_eur or '' }}" min="0" step="5000"></div>
+    <div><button type="submit">Buscar en las fuentes</button></div>
+  </form>
+
+  {% if discovery_error %}
+  <div class="alert warn" style="margin-top:12px">{{ discovery_error }}</div>
+  {% endif %}
+
+  {% if import_result %}
+  <div class="alert ok" style="margin-top:12px">
+    <strong>{{ import_result.created }} incorporadas</strong>,
+    {{ import_result.updated }} actualizadas,
+    {{ import_result.skipped }} descartadas por falta de datos.
+    Se han analizado {{ import_result.analyzed }} anuncios.
+  </div>
+  {% endif %}
+
+  {% if discovery %}
+  <div style="margin-top:16px">
+    <h4>
+      {{ discovery.candidates|length }} candidata{{ '' if discovery.candidates|length == 1 else 's' }}
+      <span class="note" style="font-weight:400">
+        · {{ discovery.sources_ok }} de {{ discovery.attempts|length }} fuentes respondieron
+      </span>
+    </h4>
+    {% if discovery.candidates %}
+    <form method="post" action="/buscar/importar">
+      <input type="hidden" name="q" value="{{ filters.q or '' }}">
+      <input type="hidden" name="province" value="{{ filters.province or '' }}">
+      <input type="hidden" name="min_area_m2" value="{{ filters.min_area_m2 or '' }}">
+      <input type="hidden" name="max_price_eur" value="{{ filters.max_price_eur or '' }}">
+      <input type="hidden" name="min_discount_pct" value="{{ filters.min_discount_pct }}">
+      <div class="scroll-x" style="max-height:420px; overflow-y:auto">
+      <table>
+        <thead><tr>
+          <th><input type="checkbox" id="todas" onclick="marcarTodas(this)"></th>
+          <th>Fuente</th><th>Ubicación</th><th class="num">m²</th>
+          <th class="num">Precio</th><th class="num">€/m²</th><th></th>
+        </tr></thead>
+        <tbody>
+        {% for c in discovery.candidates %}
+          <tr class="{{ 'ya-guardada' if c.already_saved }}">
+            <td>
+              <input type="checkbox" name="candidato" value="{{ c.payload }}"
+                     {{ 'disabled' if c.already_saved }}>
+            </td>
+            <td><span class="badge">{{ c.source_name or c.source }}</span></td>
+            <td>
+              <strong>{{ c.municipality_name or (c.title or '')[:40] }}</strong><br>
+              <span class="note">
+                {{ c.province }}{% if c.cadastral_ref %} · ref. {{ c.cadastral_ref }}{% endif %}
+                {%- if c.already_saved %} · ya en la base{% endif %}
+              </span>
+            </td>
+            <td class="num">{{ '{:,.0f}'.format(c.area_m2 or 0) }}</td>
+            <td class="num">{{ '{:,.0f}'.format(c.price_eur or 0) }} €</td>
+            <td class="num">{{ '%.0f'|format(c.price_eur_m2 or 0) }}</td>
+            <td>{% if c.url %}<a href="{{ c.url }}" target="_blank" rel="noopener">ver</a>{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <p class="note" style="margin-top:10px">
+        Al incorporarlas se busca su geometría en el Catastro por referencia
+        catastral y se vuelven a puntuar todos los anuncios.
+      </p>
+      <button type="submit">Incorporar las marcadas</button>
+    </form>
+    {% else %}
+    <div class="alert info">
+      <strong>Ninguna fuente ha devuelto candidatas para esta zona.</strong>
+      Puede que no haya oferta, o que la fuente necesite clave.
+    </div>
+    {% endif %}
+
+    <details style="margin-top:12px">
+      <summary class="note">Qué contestó cada fuente</summary>
+      <table style="margin-top:8px">
+        <thead><tr><th>Fuente</th><th class="num">Encontradas</th><th>Detalle</th></tr></thead>
+        <tbody>
+        {% for a in discovery.attempts %}
+          <tr>
+            <td>{{ a.name }}</td>
+            <td class="num">{{ a.found if a.found is defined else '—' }}</td>
+            <td class="note">{{ a.error or 'correcto' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  </div>
+  {% endif %}
+</div>
+
 <div class="grid cols-2 section">
   <div id="map"></div>
   <div class="card scroll-x" style="max-height:460px; overflow-y:auto">
-    <h3>{{ results|length }} resultado{{ '' if results|length == 1 else 's' }}</h3>
+    <h3>
+      {{ results|length }} resultado{{ '' if results|length == 1 else 's' }}
+      {% if estado and not estado.empty %}
+        <span class="note" style="font-weight:400">
+          de {{ estado.scored }} analizados
+        </span>
+      {% endif %}
+    </h3>
     {% if results %}
     <table>
       <thead><tr><th></th><th>Ubicación</th><th class="num">m²</th><th class="num">€/m²</th><th class="num">Desc.</th><th class="num">Nota</th></tr></thead>
@@ -55,8 +182,44 @@
       {% endfor %}
       </tbody>
     </table>
+    {% elif estado and estado.empty %}
+    <div class="alert warn">
+      <strong>No hay ningún anuncio cargado todavía.</strong>
+      La búsqueda funciona; lo que falta son datos. No es que no haya coincidencias.
+    </div>
+    <p class="note">
+      Usa «Traer candidatas de las fuentes», ahí arriba: elige provincia,
+      mira lo que devuelven y marca las que quieras incorporar.
+    </p>
+    <p class="note">Si prefieres cargarlas de golpe, la fuente gratuita que no necesita clave son las Subastas del BOE:</p>
+    <pre class="cmd">curl -X POST "{{ request.base_url }}api/ingest/boe-subastas?province=Cantabria"</pre>
+    <p class="note">Y después, para puntuarlos:</p>
+    <pre class="cmd">curl -X POST "{{ request.base_url }}api/analyze-all"</pre>
+    <p class="note">
+      Conviene cargar antes los puntos de interés, que dan las distancias a playa y montaña:
+    </p>
+    <pre class="cmd">curl -X POST "{{ request.base_url }}api/ingest/pois" \
+  -H 'Content-Type: application/json' \
+  -d '{"lat":43.4869,"lon":-3.5290,"radius_km":40}'</pre>
+    <p class="note">
+      Comprueba qué fuentes están operativas en <a href="/fuentes">Fuentes de datos</a>,
+      y qué hay cargado en <a href="/api/data-status">/api/data-status</a>.
+    </p>
+    {% elif estado and estado.unscored %}
+    <div class="alert warn">
+      <strong>Hay {{ estado.listings }} anuncios cargados pero ninguno puntuado.</strong>
+      El buscador sólo muestra los analizados.
+    </div>
+    <pre class="cmd">curl -X POST "{{ request.base_url }}api/analyze-all"</pre>
     {% else %}
-    <p class="note">Sin resultados con estos filtros. Si la base está vacía, carga datos desde <a href="/fuentes">Fuentes</a> o usa <code>/docs</code>.</p>
+    <div class="alert info">
+      <strong>Ningún anuncio cumple estos filtros.</strong>
+      Hay {{ estado.scored if estado else 0 }} analizados en la base.
+    </div>
+    <p class="note">
+      Prueba a bajar el descuento mínimo, subir el precio máximo o desmarcar
+      «sólo suelo al alza»: son los filtros que más recortan.
+    </p>
     {% endif %}
   </div>
 </div>
@@ -64,6 +227,11 @@
 {% block scripts %}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
+  function marcarTodas(origen) {
+    document.querySelectorAll('input[name="candidato"]:not([disabled])')
+      .forEach(c => { c.checked = origen.checked; });
+  }
+
   const results = {{ results | tojson_safe | safe }};
   const map = L.map('map').setView([40.2, -3.7], 6);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
