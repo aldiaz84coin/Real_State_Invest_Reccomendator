@@ -237,11 +237,20 @@
       <strong>Parcela real del Catastro.</strong>
       Referencia <code>{{ cat.cadastral_ref }}</code>
       {%- if cat.official_area_m2 %}, superficie oficial {{ cat.official_area_m2 }} m²{% endif %}.
-      La implantación está calculada sobre su forma real.
+      {% if cat.used_nearby %}
+        El punto indicado no cae dentro de ninguna parcela, así que se ha tomado la
+        más cercana{% if cat.distance_m %}, a {{ cat.distance_m | round | int }} m{% endif %}.
+        Ajusta las coordenadas si no es la que buscabas.
+      {% else %}
+        La implantación está calculada sobre su forma real.
+      {% endif %}
     {% else %}
       <strong>Parcela aproximada.</strong>
       {% if cat.error %}El Catastro no respondió ({{ cat.error }}).
-      {% elif cat.attempted %}El Catastro no devuelve parcela en esas coordenadas.
+      {% elif cat.attempted %}El Catastro no encuentra parcela en el punto ni en su entorno.
+        Suele ocurrir sobre agua, viales o dominio público: mueve el punto unos metros
+        hacia suelo. Puedes comprobarlo en
+        <code>/api/sources/catastro/probe?lat={{ form.lat if form else '' }}&amp;lon={{ form.lon if form else '' }}</code>.
       {% else %}No se consultó el Catastro.{% endif %}
       Se dibuja un rectángulo equivalente a la superficie indicada.
     {% endif %}

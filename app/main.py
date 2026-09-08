@@ -917,6 +917,32 @@ def api_probe_boe(
         raise HTTPException(502, str(exc)) from None
 
 
+@app.get("/api/sources/catastro/probe", tags=["fuentes"])
+def api_probe_catastro(
+    lat: float = Query(43.4869, description="Latitud del punto"),
+    lon: float = Query(-3.5290, description="Longitud del punto"),
+) -> dict[str, Any]:
+    """Diagnostica por qué el Catastro devuelve o no parcela en un punto.
+
+    Enseña cada paso: la consulta exacta, la de parcelas cercanas y la
+    descarga de la geometría. Sin esto, «no hay parcela» podía significar
+    tres cosas muy distintas.
+    """
+    try:
+        detail = CatastroSource().parcel_at_detail(lat, lon)
+    except Exception as exc:
+        raise HTTPException(502, f"{type(exc).__name__}: {exc}") from None
+
+    feature = detail.pop("feature", None)
+    resultado: dict[str, Any] = {**detail, "has_geometry": feature is not None}
+    if feature:
+        ring = (feature.get("geometry") or {}).get("coordinates", [[]])[0]
+        resultado["properties"] = feature.get("properties", {})
+        resultado["vertices"] = len(ring)
+        resultado["first_vertices"] = ring[:4]
+    return resultado
+
+
 @app.post("/api/ingest/pois", tags=["ingesta"])
 def api_ingest_pois(request: IngestPoisRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
     """Carga playas, cumbres y atracciones turisticas desde OpenStreetMap."""
