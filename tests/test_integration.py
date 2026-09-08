@@ -161,3 +161,47 @@ class TestEndpointsDeApoyo:
         datos = client.get("/api/sources/health").json()
         assert datos["summary"]["total"] >= 11
         assert all("access" in s for s in datos["sources"])
+
+
+class TestFormularioDeBusqueda:
+    """El formulario de «Localizar inversión» envía sus campos numéricos
+    vacíos cuando no se rellenan, y eso devolvía un error de validación en
+    lugar de entenderlo como «sin límite». Los tests anteriores sólo cargaban
+    la página, nunca la enviaban."""
+
+    def test_envio_con_todos_los_campos_vacios(self, client):
+        respuesta = client.get("/buscar", params={
+            "q": "", "province": "", "min_area_m2": "", "max_price_eur": "",
+            "min_discount_pct": "", "max_beach_km": "",
+        })
+        assert respuesta.status_code == 200, respuesta.text[:400]
+
+    @pytest.mark.parametrize("campo", [
+        "max_price_eur", "max_beach_km", "min_area_m2", "min_discount_pct",
+    ])
+    def test_cada_campo_numerico_admite_vacio(self, client, campo):
+        assert client.get("/buscar", params={campo: ""}).status_code == 200
+
+    def test_los_valores_por_defecto_siguen_aplicandose(self, client):
+        """Vacío no es lo mismo que ausente: ambos deben funcionar."""
+        assert client.get("/buscar").status_code == 200
+        assert client.get("/buscar", params={"min_area_m2": ""}).status_code == 200
+
+    def test_con_valores_reales(self, client):
+        respuesta = client.get("/buscar", params={
+            "q": "Noja", "min_area_m2": 500, "max_price_eur": 80000,
+            "min_discount_pct": 25, "max_beach_km": 5,
+            "require_rising_trend": "true",
+        })
+        assert respuesta.status_code == 200
+
+    def test_un_numero_invalido_sigue_rechazandose(self, client):
+        """Vacío significa «sin límite»; «abc» sigue siendo un error."""
+        assert client.get("/buscar", params={"max_price_eur": "abc"}).status_code == 422
+
+    def test_la_api_de_oportunidades_se_comporta_igual(self, client):
+        """La API y el formulario deben tratar el vacío del mismo modo."""
+        respuesta = client.get("/api/opportunities", params={
+            "max_price_eur": "", "max_beach_km": "", "min_area_m2": "",
+            "min_discount_pct": "", "max_area_m2": ""})
+        assert respuesta.status_code == 200, respuesta.text[:300]

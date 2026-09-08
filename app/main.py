@@ -5,9 +5,10 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from pydantic import BeforeValidator
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -41,6 +42,22 @@ from app.sources.osm import OverpassSource
 from app.sources.rapidapi import extract_listings, iter_rapidapi_sources
 from app.sources.registry import check_all
 from app.sources.rental import InsideAirbnbSource
+
+def _empty_to_none(value: Any) -> Any:
+    """Un campo de formulario que se deja en blanco llega como cadena vacía.
+
+    Sin esto, buscar sin rellenar «precio máximo» devolvía un error de
+    validación en lugar de entenderlo como «sin límite», que es justo lo que
+    el usuario quiere decir al dejarlo vacío.
+    """
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+# Numéricos que vienen de un formulario y pueden llegar en blanco.
+OptionalFloat = Annotated[float | None, BeforeValidator(_empty_to_none)]
+OptionalInt = Annotated[int | None, BeforeValidator(_empty_to_none)]
 
 logger = logging.getLogger("investment")
 BASE_DIR = Path(__file__).resolve().parent
@@ -342,7 +359,7 @@ def _query_opportunities(db: Session, query: OpportunityQuery) -> list[dict[str,
         )
     if query.min_discount_pct:
         statement = statement.where(
-            OpportunityScore.discount_vs_market >= query.min_discount_pct / 100.0
+            OpportunityScore.discount_vs_market >= (query.min_discount_pct or 0) / 100.0
         )
     if query.max_beach_km is not None:
         statement = statement.where(OpportunityScore.dist_beach_km <= query.max_beach_km)
@@ -1045,18 +1062,20 @@ def page_search(
     db: Session = Depends(get_db),
     q: str | None = None,
     province: str | None = None,
-    min_area_m2: float = 300,
-    max_price_eur: float | None = None,
-    min_discount_pct: float = 20,
-    max_beach_km: float | None = None,
+    min_area_m2: OptionalFloat = None,
+    max_price_eur: OptionalFloat = None,
+    min_discount_pct: OptionalFloat = None,
+    max_beach_km: OptionalFloat = None,
     require_rising_trend: bool = False,
 ) -> HTMLResponse:
     query = OpportunityQuery(
-        q=q,
-        province=province,
-        min_area_m2=min_area_m2,
+        q=q or None,
+        province=province or None,
+        # Los valores por defecto se aplican aquí y no en la firma: así un
+        # campo borrado a propósito significa «sin límite» y no revienta.
+        min_area_m2=300 if min_area_m2 is None else min_area_m2,
         max_price_eur=max_price_eur,
-        min_discount_pct=min_discount_pct,
+        min_discount_pct=20 if min_discount_pct is None else min_discount_pct,
         max_beach_km=max_beach_km,
         require_rising_trend=require_rising_trend,
         limit=200,
