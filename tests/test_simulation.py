@@ -420,3 +420,54 @@ class TestFotoDeModelo:
         assert tarjetas["modular-60"]["image_url"] is None
         # El esquema sigue estando en ambos casos.
         assert all(m["preview_svg"].startswith("<svg") for m in tarjetas.values())
+
+
+class TestPresets:
+    """El simulador arrancaba pidiendo coordenadas, que es la barrera que
+    impedía probarlo. Ahora parte de un punto real de Cantabria."""
+
+    def test_el_predeterminado_esta_en_cantabria(self):
+        from app.simulation.presets import DEFAULT_PRESET_ID, get_preset
+
+        preset = get_preset(None)
+        assert preset.id == DEFAULT_PRESET_ID
+        assert preset.region == "Cantabria"
+        assert preset.ccaa == "Cantabria"
+
+    def test_las_coordenadas_caen_en_cantabria(self):
+        from app.simulation.presets import get_preset
+
+        preset = get_preset(None)
+        # Cantabria: aproximadamente 43,0-43,6 N y 3,1-4,9 O.
+        assert 43.0 < preset.lat < 43.7
+        assert -5.0 < preset.lon < -3.0
+
+    def test_un_id_desconocido_cae_al_predeterminado(self):
+        from app.simulation.presets import get_preset
+
+        assert get_preset("no-existe").region == "Cantabria"
+
+    def test_todos_los_presets_son_coherentes(self):
+        from app.simulation.presets import PRESETS
+
+        for preset in PRESETS:
+            assert preset.zone_type in ("costa", "montana", "rural")
+            assert 27 < preset.lat < 44          # dentro de España
+            assert -19 < preset.lon < 5
+            assert preset.typical_price_eur > 0
+            assert preset.typical_area_m2 > 0
+            assert preset.note
+
+    def test_hay_costa_y_montana(self):
+        from app.simulation.presets import PRESETS
+
+        tipos = {p.zone_type for p in PRESETS}
+        assert "costa" in tipos and "montana" in tipos
+
+    def test_la_ccaa_del_preset_existe_en_la_tabla_de_itp(self):
+        """Si no, el simulador aplicaría el tipo por defecto sin avisar."""
+        from app.simulation.costs import ITP_BY_CCAA
+        from app.simulation.presets import PRESETS
+
+        for preset in PRESETS:
+            assert preset.ccaa in ITP_BY_CCAA, preset.id

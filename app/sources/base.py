@@ -63,6 +63,15 @@ class SourceError(RuntimeError):
     """Fallo recuperable al hablar con una fuente externa."""
 
 
+class SourceBlocked(SourceError):
+    """La política de red del entorno impide llegar a la fuente.
+
+    Es SourceError para que cualquier código que ya atrapa esa excepción lo
+    cubra: dejarlo escapar como httpx.ProxyError provocaba errores 500 en los
+    endpoints, y era un fallo que se repetía en cada conector nuevo.
+    """
+
+
 class BaseSource:
     """Conector. Cada fuente implementa `check()` y sus metodos de consulta."""
 
@@ -107,8 +116,11 @@ class BaseSource:
             try:
                 with self.client() as client:
                     response = client.request(method, url, **kwargs)
-            except httpx.ProxyError:
-                raise  # bloqueo de politica de red: reintentar no ayuda
+            except httpx.ProxyError as exc:
+                # Reintentar una denegación de política no sirve de nada.
+                raise SourceBlocked(
+                    f"La red de este entorno bloquea el acceso a {url}: {exc}"
+                ) from None
             except TRANSIENT_EXCEPTIONS as exc:
                 last_exception = exc
                 if attempt == attempts:
@@ -148,7 +160,7 @@ class BaseSource:
         started = time.perf_counter()
         try:
             response = self.request(method, url, **kwargs)
-        except httpx.ProxyError as exc:
+        except SourceBlocked as exc:
             return self._status(
                 "unavailable",
                 f"Bloqueado por el proxy de salida del entorno, no por la fuente: {exc}",

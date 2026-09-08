@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import SourceCheck
 from app.sources.base import BaseSource, SourceStatus
+from app.sources.boe import BoeSubastasSource
 from app.sources.catastro import CatastroSource
 from app.sources.idealista import FotocasaSource, IdealistaSource, PisosComSource
 from app.sources.osm import NominatimSource, OverpassSource
@@ -26,6 +27,7 @@ def build_sources() -> list[BaseSource]:
         IdealistaSource(),
         FotocasaSource(),
         PisosComSource(),
+        BoeSubastasSource(),
         *iter_rapidapi_sources(),
         CatastroSource(),
         IneSource(),
@@ -77,7 +79,7 @@ def check_all(db: Session | None = None, timeout: float = 45.0) -> dict[str, Any
 
     required_ok = all(s.ok for s in statuses if s.required)
     has_listings = any(s.ok for s in statuses if s.kind == "listings")
-    official_listings = any(s.ok for s in statuses if s.key == "idealista")
+    official_listings = any(s.ok for s in statuses if s.key in ("idealista", "boe_subastas"))
     fallback_listings = any(s.ok for s in statuses if s.key.startswith("rapidapi_"))
 
     return {
@@ -95,8 +97,9 @@ def check_all(db: Session | None = None, timeout: float = 45.0) -> dict[str, Any
             "operational": required_ok,
             "note": (
                 "Las fuentes obligatorias (Catastro, INE, OSM) son abiertas y no "
-                "necesitan clave: con ellas la app ya localiza y valora parcelas. "
-                "Idealista anade los anuncios en venta y requiere clave propia."
+                "necesitan clave. Las Subastas del BOE aportan ofertas activas de "
+                "inmuebles en toda Espana sin clave ni coste; Idealista anade el "
+                "mercado libre y requiere clave propia."
             ),
         },
     }

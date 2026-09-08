@@ -147,7 +147,15 @@ class TestReintentos:
         assert calls["n"] == 2
 
     def test_no_reintenta_un_bloqueo_del_proxy(self, source, monkeypatch):
-        """Una denegación de política de red no se arregla insistiendo."""
+        """Una denegación de política de red no se arregla insistiendo.
+
+        Sale como SourceBlocked y no como httpx.ProxyError: al ser SourceError
+        lo cubre cualquier código que ya atrapaba fallos de fuente. Dejarlo
+        escapar como excepción de httpx provocaba errores 500 en los
+        endpoints, y era un fallo que reaparecía en cada conector nuevo.
+        """
+        from app.sources.base import SourceBlocked, SourceError
+
         calls = {"n": 0}
 
         def fake_request(self, method, url, **kwargs):
@@ -155,9 +163,10 @@ class TestReintentos:
             raise httpx.ProxyError("403 Forbidden")
 
         monkeypatch.setattr(httpx.Client, "request", fake_request)
-        with pytest.raises(httpx.ProxyError):
+        with pytest.raises(SourceBlocked) as error:
             source.request("GET", "http://ejemplo.invalido/")
         assert calls["n"] == 1
+        assert isinstance(error.value, SourceError)   # el contrato que importa
 
 
 class TestClasificacionDeEstado:
@@ -1358,3 +1367,102 @@ class TestMiniaturaDelAnuncio:
 
         item = {"propertyCode": "1", "price": 1000, "size": 500}
         assert RapidApiIdealista17Source().normalize(item)["raw"]["thumbnail_url"] == ""
+
+
+class TestSubastasBoe:
+    """Única fuente gratuita de ofertas activas en toda España. Es información
+    del sector público, no scraping de un portal privado."""
+
+    DETALLE = """
+    <table>
+     <tr><th>Valor subasta</th><td>48.500,00 €</td></tr>
+     <tr><th>Tasación</th><td>97.000,00 €</td></tr>
+     <tr><th>Puja mínima</th><td>24.250,00 €</td></tr>
+    </table>
+    <table>
+     <tr><th>Descripción</th><td>Finca rústica de 1,25 hectáreas en Noja.</td></tr>
+     <tr><th>Tipo de bien</th><td>Finca rústica</td></tr>
+     <tr><th>Localidad</th><td>Noja</td></tr>
+     <tr><th>Provincia</th><td>Cantabria</td></tr>
+     <tr><th>Referencia catastral</th><td>39047A00700123 0000XY</td></tr>
+    </table>"""
+
+    @staticmethod
+    def _source():
+        from app.sources.boe import BoeSubastasSource
+
+        return BoeSubastasSource
+
+    def test_lee_los_pares_etiqueta_valor(self):
+        detalle = self._source().parse_detail(self.DETALLE, "SUB-JA-2026-1")
+        assert detalle["asset_type"] == "Finca rústica"
+        assert detalle["municipality"] == "Noja"
+        assert detalle["province"] == "Cantabria"
+
+    def test_el_precio_es_la_puja_minima_no_la_tasacion(self):
+        """Es lo que hay que pagar; usar la tasación inflaría el €/m²."""
+        detalle = self._source().parse_detail(self.DETALLE, "SUB-JA-2026-1")
+        item = self._source().normalize(detalle)
+        assert item["price_eur"] == 24250.0
+
+    def test_convierte_hectareas_a_metros(self):
+        """Confundirlas cambia el precio por metro en cuatro órdenes."""
+        detalle = self._source().parse_detail(self.DETALLE, "SUB-JA-2026-1")
+        item = self._source().normalize(detalle)
+        assert item["area_m2"] == 12500.0
+        assert item["price_eur_m2"] == pytest.approx(1.94, abs=0.01)
+
+    @pytest.mark.parametrize("texto,esperado", [
+        ("1,25 hectáreas", 12500.0),
+        ("2 Has", 20000.0),
+        ("45 áreas", 4500.0),
+        ("1.250 m2", 1250.0),
+        ("800 m²", 800.0),
+        ("3.500 metros cuadrados", 3500.0),
+        ("sin superficie", None),
+    ])
+    def test_unidades_de_superficie(self, texto, esperado):
+        from app.sources.boe import _parse_area
+
+        resultado = _parse_area(texto)
+        if esperado is None:
+            assert resultado is None
+        else:
+            assert resultado == pytest.approx(esperado)
+
+    def test_limpia_la_referencia_catastral(self):
+        detalle = self._source().parse_detail(self.DETALLE, "SUB-JA-2026-1")
+        item = self._source().normalize(detalle)
+        assert item["cadastral_ref"] == "39047A007001230000XY"
+        assert len(item["cadastral_ref"]) == 20
+
+    def test_distingue_suelo_de_vivienda(self):
+        source = self._source()
+        suelo = source.parse_detail(self.DETALLE, "x")
+        assert source.is_land(suelo)
+        piso = {"asset_type": "Vivienda", "description": "Piso de 90 m2 con plaza de garaje"}
+        assert not source.is_land(piso)
+
+    def test_extrae_identificadores_sin_duplicar(self):
+        html = ('<a href="detalleSubasta.php?idSub=SUB-JA-2026-1">a</a>'
+                '<a href="detalleSubasta.php?idSub=SUB-NE-2026-2">b</a>'
+                '<a href="detalleSubasta.php?idSub=SUB-JA-2026-1">repetida</a>')
+        assert self._source().parse_result_ids(html) == ["SUB-JA-2026-1", "SUB-NE-2026-2"]
+
+    def test_codigos_de_provincia(self):
+        source = self._source()
+        assert source.province_code("Cantabria") == "39"
+        assert source.province_code("cantabria") == "39"
+        assert source.province_code("Málaga") == "29"
+        assert source.province_code("7") == "07"       # se rellena a dos dígitos
+        assert source.province_code(None) is None
+        assert source.province_code("Provincia inventada") is None
+
+    def test_sin_importe_o_sin_superficie_se_descarta(self):
+        source = self._source()
+        assert source.normalize({"id_sub": "x", "url": "u", "description": "sin datos"}) is None
+
+    def test_aparece_en_el_registro_de_fuentes(self):
+        from app.sources.registry import build_sources
+
+        assert "boe_subastas" in {s.key for s in build_sources()}

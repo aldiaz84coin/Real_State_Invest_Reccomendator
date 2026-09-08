@@ -28,10 +28,12 @@ from app.services import analyze_listing, run_full_simulation
 from app.simulation.catalog import (
     CATALOG, IMAGE_EXTENSIONS, get_model, image_path_for, list_models,
 )
+from app.simulation.presets import DEFAULT_PRESET_ID, get_preset, list_presets
 from app.simulation.render_model import render_model_card_svg
 from app.simulation.costs import CostAssumptions
 from app.simulation.siteplan import SitePlanOptions
 from app.sources.base import SourceError
+from app.sources.boe import BoeSubastasSource
 from app.sources.catastro import CatastroSource
 from app.sources.idealista import IdealistaSource
 from app.sources.images import ReferenceImageSource
@@ -752,6 +754,133 @@ def api_probe_suggestions(
         raise HTTPException(502, f"{type(exc).__name__}: {exc}") from None
 
 
+@app.post("/api/ingest/boe-subastas", tags=["ingesta"])
+def api_ingest_boe(
+    province: str | None = Query(None, description="Provincia o su código INE"),
+    only_land: bool = Query(True, description="Sólo suelo: fincas, solares y parcelas"),
+    max_results: int = Query(30, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Carga inmuebles del Portal de Subastas del BOE.
+
+    Es la única fuente gratuita de ofertas activas en toda España, y encaja con
+    el propósito de la app: en subasta el suelo suele salir por debajo de
+    mercado. Muchas subastas traen referencia catastral, lo que permite cruzar
+    la parcela con su geometría real aunque el anuncio no lleve coordenadas.
+    """
+    source = BoeSubastasSource()
+    try:
+        identifiers = source.search(province, only_land=only_land, max_results=max_results)
+    except SourceError as exc:
+        raise HTTPException(502, str(exc)) from None
+
+    created = updated = skipped_not_land = skipped_incomplete = 0
+    errors: list[str] = []
+
+    for identifier in identifiers:
+        try:
+            detail = source.detail(identifier)
+        except SourceError as exc:
+            errors.append(f"{identifier}: {str(exc)[:120]}")
+            continue
+
+        if only_land and not source.is_land(detail):
+            skipped_not_land += 1
+            continue
+
+        item = source.normalize(detail)
+        if item is None:
+            # Sin importe o sin superficie no se puede calcular el €/m².
+            skipped_incomplete += 1
+            continue
+
+        cadastral = item.pop("cadastral_ref", None)
+        item.pop("coords_precision", None)
+
+        # La referencia catastral da la posición exacta sin depender de que la
+        # subasta publique coordenadas, que nunca lo hace.
+        if cadastral:
+            try:
+                feature = CatastroSource().parcel_geometry(cadastral)
+            except Exception:
+                feature = None
+            if feature:
+                ring = _extract_ring_safe(feature)
+                if ring:
+                    item["lat"] = sum(p[1] for p in ring) / len(ring)
+                    item["lon"] = sum(p[0] for p in ring) / len(ring)
+                    item["parcel_geojson"] = feature
+                    item["cadastral_ref"] = cadastral
+
+        if item.get("lat") is None:
+            resolved = _resolve_missing_coords(db, item)
+            if resolved is None:
+                skipped_incomplete += 1
+                continue
+            item["lat"], item["lon"] = resolved
+
+        existing = db.execute(
+            select(Listing).where(
+                Listing.source == item["source"], Listing.external_id == item["external_id"]
+            )
+        ).scalar_one_or_none()
+        if existing:
+            for key, value in item.items():
+                setattr(existing, key, value)
+            existing.active = True
+            updated += 1
+            listing = existing
+        else:
+            listing = Listing(**item)
+            db.add(listing)
+            created += 1
+
+        municipality = _match_municipality(
+            db, item.get("municipality_name", ""), item["lat"], item["lon"]
+        )
+        if municipality:
+            listing.municipality_id = municipality.id
+
+    db.commit()
+    return {
+        "found": len(identifiers),
+        "created": created,
+        "updated": updated,
+        "skipped_not_land": skipped_not_land,
+        "skipped_incomplete": skipped_incomplete,
+        "errors": errors[:10],
+    }
+
+
+@app.get("/api/sources/boe/probe", tags=["fuentes"])
+def api_probe_boe(
+    province: str | None = Query(None),
+    id_sub: str | None = Query(None, description="Diagnostica una subasta concreta"),
+) -> dict[str, Any]:
+    """Diagnostica el parseo del portal de subastas contra datos reales."""
+    source = BoeSubastasSource()
+    try:
+        if id_sub:
+            detail = source.detail(id_sub)
+            return {
+                "id_sub": id_sub,
+                "parsed": {k: v for k, v in detail.items() if k != "raw_fields"},
+                "all_labels_found": sorted(detail.get("raw_fields", {})),
+                "is_land": source.is_land(detail),
+                "normalized": source.normalize(detail),
+            }
+        identifiers = source.search(province, max_results=10)
+        return {
+            "province": province,
+            "province_code": source.province_code(province),
+            "auctions_found": len(identifiers),
+            "ids": identifiers,
+            "hint": "Añade ?id_sub=<id> para ver el detalle parseado de una.",
+        }
+    except SourceError as exc:
+        raise HTTPException(502, str(exc)) from None
+
+
 @app.post("/api/ingest/pois", tags=["ingesta"])
 def api_ingest_pois(request: IngestPoisRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
     """Carga playas, cumbres y atracciones turisticas desde OpenStreetMap."""
@@ -939,14 +1068,23 @@ def page_opportunity(
     )
 
 
+@app.get("/api/presets", tags=["simulacion"])
+def api_presets() -> dict[str, Any]:
+    return {"presets": list_presets(), "default": DEFAULT_PRESET_ID}
+
+
 @app.get("/simular", response_class=HTMLResponse, include_in_schema=False)
 def page_simulator(
-    request: Request, db: Session = Depends(get_db), listing_id: int | None = None
+    request: Request,
+    db: Session = Depends(get_db),
+    listing_id: int | None = None,
+    preset: str | None = None,
 ) -> HTMLResponse:
     listing = db.get(Listing, listing_id) if listing_id else None
     return templates.TemplateResponse(
         "simulator.html",
-        {"request": request, "models": _model_cards(), "listing": listing, "result": None},
+        {"request": request, "models": _model_cards(), "listing": listing,
+         "result": None, "presets": list_presets(), "preset": get_preset(preset)},
     )
 
 
@@ -970,7 +1108,8 @@ async def page_simulate(request: Request, db: Session = Depends(get_db)) -> HTML
         return templates.TemplateResponse(
             "simulator.html",
             {"request": request, "models": _model_cards(), "listing": None,
-             "result": None, "error": exc.detail},
+             "result": None, "error": exc.detail,
+             "presets": list_presets(), "preset": get_preset(None)},
             status_code=exc.status_code,
         )
 
@@ -978,13 +1117,23 @@ async def page_simulate(request: Request, db: Session = Depends(get_db)) -> HTML
     return templates.TemplateResponse(
         "simulator.html",
         {"request": request, "models": _model_cards(), "listing": listing,
-         "result": result, "form": payload},
+         "result": result, "form": payload,
+         "presets": list_presets(), "preset": get_preset(None)},
     )
 
 
 @app.exception_handler(SourceError)
 async def source_error_handler(_request: Request, exc: SourceError) -> JSONResponse:
     return JSONResponse(status_code=502, content={"ok": False, "message": str(exc)})
+
+
+def _extract_ring_safe(feature: dict[str, Any]) -> list[list[float]] | None:
+    from app.services import _extract_ring
+
+    try:
+        return _extract_ring(feature)
+    except Exception:
+        return None
 
 
 def _resolve_missing_coords(db: Session, item: dict[str, Any]) -> tuple[float, float] | None:

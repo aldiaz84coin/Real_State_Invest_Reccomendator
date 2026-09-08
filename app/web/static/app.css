@@ -196,3 +196,14 @@ ul.clean li:last-child { border-bottom: 0; }
 }
 .btn-mini:hover { background: var(--accent-soft); }
 .btn-mini:disabled { opacity: .6; cursor: default; }
+
+/* Puntos de partida del simulador */
+.preset-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 16px; }
+.preset {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-radius: 999px; padding: 6px 14px; font-size: .84rem; font-weight: 500;
+  cursor: pointer; display: inline-flex; align-items: baseline; gap: 6px;
+}
+.preset:hover { border-color: var(--accent); }
+.preset.active { border-color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+.preset-region { font-size: .74rem; color: var(--text-dim); }
