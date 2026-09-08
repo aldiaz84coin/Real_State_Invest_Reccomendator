@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_env: str = "development"
+    # DEBUG añade la traza de cada petición saliente a las fuentes.
+    log_level: str = "INFO"
     database_url: str = "sqlite:///./investment.db"
 
     # Idealista: unica via oficial para leer anuncios de portales.

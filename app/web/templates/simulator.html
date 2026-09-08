@@ -223,11 +223,24 @@
 <div class="card section">
   <h2>Propuesta sobre la parcela</h2>
   <p class="note">
-    {{ result.model.name }} · parcela {{ sp.metrics.parcel_area_m2 }} m² ·
-    edificable tras retranqueos {{ sp.metrics.buildable_area_m2 }} m² ·
-    huella {{ sp.metrics.house_footprint_m2 }} m²
-    ({{ (sp.compliance.occupancy_rate * 100) | round(1) }}% de ocupación)
+    {{ result.model.name }} · parcela {{ sp.metrics.parcel_area_m2 or '—' }} m²
+    {%- if sp.metrics.buildable_area_m2 %} · edificable tras retranqueos
+      {{ sp.metrics.buildable_area_m2 }} m²{% endif %}
+    {%- if sp.metrics.house_footprint_m2 %} · huella {{ sp.metrics.house_footprint_m2 }} m²
+      {%- if sp.compliance and sp.compliance.occupancy_rate is defined %}
+        ({{ (sp.compliance.occupancy_rate * 100) | round(1) }}% de ocupación)
+      {%- endif %}
+    {%- endif %}
   </p>
+
+  {% if not sp.feasible %}
+  <div class="alert bad">
+    <strong>La casa no cabe en esta parcela con los retranqueos indicados.</strong>
+    Los costes y el plan de negocio de abajo siguen siendo válidos, pero no hay
+    implantación que dibujar. Prueba con un modelo más pequeño, una parcela mayor
+    o retranqueos menores si la ordenanza lo permite.
+  </div>
+  {% endif %}
 
   {% for w in sp.warnings %}<div class="alert warn">{{ w }}</div>{% endfor %}
 
@@ -256,6 +269,7 @@
     {% endif %}
   </div>
 
+  {% if sp.feasible %}
   <div class="tabs">
     <button type="button" class="active" data-view="view2d">Plano 2D</button>
     <button type="button" data-view="view3d">Vista 3D</button>
@@ -265,7 +279,8 @@
 
   <div id="view2d">{{ sp.svg | safe }}</div>
   <div id="viewmap" hidden><div id="map" style="height:460px"></div></div>
-  <div id="viewmodel" hidden>
+  {% endif %}
+  <div id="viewmodel"{{ ' hidden' if sp.feasible }}>
     <div class="grid cols-2">
       <div>
         {% if result.model.image_url %}

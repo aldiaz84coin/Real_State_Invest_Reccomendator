@@ -99,6 +99,24 @@ class TestSimulacionCompleta:
         datos = respuesta.json()
         assert datos["business_plan"]["financing"]["loan_amount_eur"] == 90000
 
+    def test_una_parcela_imposible_no_revienta_en_el_formulario(self, client):
+        """Es el camino que falló en producción: la API devolvía el aviso pero
+        la plantilla asumía que siempre hay implantación viable."""
+        respuesta = client.post("/simular", data={
+            **self.BASE, "parcel_area_m2": 150, "model_id": "modular-90"})
+        assert respuesta.status_code == 200, respuesta.text[:600]
+        assert "no cabe en esta parcela" in respuesta.text
+        # Los números siguen calculándose aunque no haya plano.
+        assert "Inversión total" in respuesta.text
+
+    @pytest.mark.parametrize("area,model_id", [
+        (150, "modular-90"), (200, "modular-60"), (80, "plegable-40-2dorm"),
+    ])
+    def test_varias_parcelas_imposibles_por_formulario(self, client, area, model_id):
+        respuesta = client.post("/simular", data={
+            **self.BASE, "parcel_area_m2": area, "model_id": model_id})
+        assert respuesta.status_code == 200, respuesta.text[:400]
+
     def test_una_parcela_imposible_no_revienta(self, client):
         """Un módulo que no cabe debe explicarse, no romper la página."""
         respuesta = client.post("/api/simulate", json={
@@ -205,3 +223,254 @@ class TestFormularioDeBusqueda:
             "max_price_eur": "", "max_beach_km": "", "min_area_m2": "",
             "min_discount_pct": "", "max_area_m2": ""})
         assert respuesta.status_code == 200, respuesta.text[:300]
+
+
+@pytest.fixture
+def base_vacia(client):
+    """Deja la base sin anuncios.
+
+    Los tests comparten una sola base por módulo; sin esto, lo que importe
+    otro test decidiría si éste pasa, según el orden en que se ejecuten.
+    """
+    from app.db import SessionLocal
+    from app.models import Listing, OpportunityScore
+
+    with SessionLocal() as db:
+        db.query(OpportunityScore).delete()
+        db.query(Listing).delete()
+        db.commit()
+    return client
+
+
+class TestEstadoDeLosDatos:
+    """Una búsqueda sin datos se veía igual que una búsqueda rota, y eso hace
+    perder tiempo buscando un fallo que no existe."""
+
+    def test_la_api_dice_si_la_base_esta_vacia(self, base_vacia):
+        client = base_vacia
+        estado = client.get("/api/data-status").json()
+        assert estado["empty"] is True
+        assert estado["listings"] == 0
+
+    def test_el_buscador_explica_que_faltan_datos(self, base_vacia):
+        html = base_vacia.get("/buscar").text
+        assert "No hay ningún anuncio cargado" in html
+        assert "La búsqueda funciona" in html          # separa vacío de roto
+        assert "boe-subastas" in html                  # y dice cómo cargarlos
+
+    def test_el_panel_da_los_pasos_en_orden(self, base_vacia):
+        html = base_vacia.get("/").text
+        assert "ingest/pois" in html
+        assert "boe-subastas" in html
+        assert "analyze-all" in html
+
+
+class TestRegistroDeActividad:
+    def test_las_peticiones_se_registran_con_su_duracion(self, client, caplog):
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="investment"):
+            client.get("/buscar", params={"q": "Noja"})
+        mensajes = " ".join(r.getMessage() for r in caplog.records)
+        assert "/buscar" in mensajes
+        assert "ms" in mensajes            # la duración, que uvicorn no da
+        assert "q=Noja" in mensajes        # los parámetros, para reproducirlo
+
+    def test_las_claves_no_se_registran(self, client, caplog):
+        """Un log con la clave dentro es una fuga esperando a ocurrir."""
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="investment"):
+            client.get("/buscar", params={"api_key": "secreto-que-no-debe-salir"})
+        mensajes = " ".join(r.getMessage() for r in caplog.records)
+        assert "secreto-que-no-debe-salir" not in mensajes
+        assert "***" in mensajes
+
+    def test_health_no_ensucia_el_log(self, client, caplog):
+        """Fly la consulta cada pocos segundos; registrarla tapa lo demás."""
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="investment"):
+            client.get("/health")
+        assert not [r for r in caplog.records if "/health" in r.getMessage()]
+
+
+class FuenteFalsa:
+    """Fuente de subastas simulada: las de verdad necesitan red."""
+
+    key = "boe_subastas"
+    name = "Subastas del BOE (inmuebles)"
+
+    LOTES = [
+        {"id_sub": "SUB-1", "price_eur": 60000.0, "area_m2": 1000.0,
+         "municipality": "Noja", "province": "Cantabria"},
+        {"id_sub": "SUB-2", "price_eur": 30000.0, "area_m2": 1500.0,
+         "municipality": "Noja", "province": "Cantabria"},
+    ]
+
+    def search(self, province=None, *, only_land=True, max_results=40):
+        return [lote["id_sub"] for lote in self.LOTES]
+
+    def detail(self, identifier):
+        return next(l for l in self.LOTES if l["id_sub"] == identifier)
+
+    @staticmethod
+    def is_land(detail):
+        return True
+
+    @classmethod
+    def normalize(cls, detail):
+        return {
+            "source": "boe_subastas",
+            "external_id": detail["id_sub"],
+            "url": f"https://ejemplo/{detail['id_sub']}",
+            "title": "Finca rústica",
+            "description": "",
+            "price_eur": detail["price_eur"],
+            "area_m2": detail["area_m2"],
+            "price_eur_m2": detail["price_eur"] / detail["area_m2"],
+            # Con coordenadas propias no hace falta ni Catastro ni municipio.
+            "lat": 43.4869,
+            "lon": -3.5290,
+            "address": "",
+            "municipality_name": detail["municipality"],
+            "province": detail["province"],
+            "land_type": "finca",
+            "cadastral_ref": None,
+            "raw": detail,
+        }
+
+
+@pytest.fixture
+def fuentes_simuladas(monkeypatch):
+    """Sustituye las fuentes reales: sin red, y con resultados predecibles."""
+    from app import discovery
+
+    monkeypatch.setattr(discovery, "BoeSubastasSource", FuenteFalsa)
+    monkeypatch.setattr(discovery, "iter_rapidapi_sources", lambda: [])
+
+    class IdealistaMudo:
+        key = "idealista"
+        name = "Idealista (API oficial)"
+
+        def search_lands(self, *args, **kwargs):
+            from app.sources.base import SourceError
+
+            raise SourceError("sin credenciales")
+
+    monkeypatch.setattr(discovery, "IdealistaSource", IdealistaMudo)
+
+
+class TestDescubrimiento:
+    """Buscar tiene que servir para poblar la base, no sólo para consultarla."""
+
+    def test_descubrir_no_guarda_nada(self, client, fuentes_simuladas):
+        from app.discovery import discover
+        from app.db import SessionLocal
+        from app.models import Listing
+        from sqlalchemy import func, select
+
+        with SessionLocal() as db:
+            antes = db.scalar(select(func.count(Listing.id)))
+            resultado = discover(db, province="Cantabria")
+            assert db.scalar(select(func.count(Listing.id))) == antes
+
+        assert len(resultado["candidates"]) == 2
+        # Lo más barato por metro va primero: es el criterio de la aplicación.
+        precios = [c["price_eur_m2"] for c in resultado["candidates"]]
+        assert precios == sorted(precios)
+        assert all(c["token"] for c in resultado["candidates"])
+
+    def test_los_filtros_recortan_las_candidatas(self, client, fuentes_simuladas):
+        from app.discovery import discover
+        from app.db import SessionLocal
+
+        with SessionLocal() as db:
+            resultado = discover(db, province="Cantabria", max_price_eur=40000)
+        assert [c["external_id"] for c in resultado["candidates"]] == ["SUB-2"]
+
+    def test_importar_guarda_y_puntua(self, client, fuentes_simuladas):
+        from app.discovery import discover, import_candidates
+        from app.db import SessionLocal
+        from app.models import Listing, OpportunityScore
+        from sqlalchemy import select
+
+        with SessionLocal() as db:
+            candidatas = discover(db, province="Cantabria")["candidates"]
+            resumen = import_candidates(db, candidatas)
+            assert resumen["created"] == 2
+            assert resumen["analyzed"] >= 2
+
+            guardada = db.execute(
+                select(Listing).where(Listing.external_id == "SUB-1")
+            ).scalar_one()
+            assert guardada.source == "boe_subastas"
+            assert db.execute(
+                select(OpportunityScore).where(OpportunityScore.listing_id == guardada.id)
+            ).scalar_one_or_none() is not None
+
+            # Una segunda pasada no debe duplicar ni volver a ofrecerlas.
+            repetidas = discover(db, province="Cantabria")["candidates"]
+            assert all(c["already_saved"] for c in repetidas)
+            assert import_candidates(db, repetidas)["created"] == 0
+
+    def test_una_candidata_no_puede_colar_columnas(self):
+        """El texto vuelve del navegador: sólo se aceptan campos conocidos."""
+        from app.discovery import deserialize, serialize
+
+        empaquetada = serialize({"source": "boe_subastas", "external_id": "X",
+                                 "price_eur": 1000.0, "area_m2": 100.0,
+                                 "token": "abc", "already_saved": True,
+                                 "id": 7, "active": False})
+        recuperada = deserialize(empaquetada)
+        assert "id" not in recuperada and "active" not in recuperada
+        assert recuperada["external_id"] == "X"
+
+    def test_texto_invalido_no_rompe_la_importacion(self):
+        from app.discovery import deserialize
+
+        assert deserialize("{no es json") is None
+        assert deserialize("[1,2,3]") is None
+
+
+class TestDescubrimientoWeb:
+    """El camino que recorre el usuario desde el buscador."""
+
+    def test_sin_zona_avisa_en_lugar_de_fallar(self, client):
+        respuesta = client.post("/buscar/descubrir", data={"q": "", "province": ""})
+        assert respuesta.status_code == 200
+        assert "las fuentes necesitan saber dónde buscar" in respuesta.text
+
+    def test_lista_las_candidatas_con_su_casilla(self, client, fuentes_simuladas):
+        respuesta = client.post("/buscar/descubrir", data={"province": "Cantabria"})
+        assert respuesta.status_code == 200
+        assert 'name="candidato"' in respuesta.text
+        assert "Subastas del BOE" in respuesta.text
+        assert "Incorporar las marcadas" in respuesta.text
+
+    def test_sin_marcar_ninguna_lo_dice(self, client):
+        respuesta = client.post("/buscar/importar", data={"province": "Cantabria"})
+        assert respuesta.status_code == 200
+        assert "No has marcado ninguna candidata" in respuesta.text
+
+    def test_importar_desde_el_formulario_puebla_la_base(self, client, fuentes_simuladas):
+        from app.discovery import discover, serialize
+        from app.db import SessionLocal
+
+        with SessionLocal() as db:
+            candidatas = discover(db, province="Cantabria")["candidates"]
+        pendientes = [c for c in candidatas if not c["already_saved"]]
+        if not pendientes:                      # otro test pudo importarlas ya
+            pendientes = candidatas
+
+        respuesta = client.post(
+            "/buscar/importar",
+            data={"province": "Cantabria",
+                  "candidato": [serialize(c) for c in pendientes]},
+        )
+        assert respuesta.status_code == 200
+        assert "actualizadas" in respuesta.text
+
+        # Y ahora el buscador ya tiene algo que enseñar.
+        html = client.get("/buscar", params={"min_discount_pct": 0}).text
+        assert "No hay ningún anuncio cargado" not in html

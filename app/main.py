@@ -17,6 +17,11 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db, init_db
+from app.discovery import (
+    deserialize, discover, extract_ring_safe, import_candidates,
+    match_municipality, resolve_missing_coords, serialize,
+)
+from app.logging_setup import RequestLogMiddleware, configure_logging, log_operation
 from app.models import Listing, Municipality, OpportunityScore, Poi, RentalStat, Simulation
 from app.schemas import (
     IngestListingsRequest,
@@ -65,8 +70,16 @@ BASE_DIR = Path(__file__).resolve().parent
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    settings = get_settings()
+    configure_logging(settings.log_level)
     init_db()
-    logger.info("Base de datos lista")
+    logger.info(
+        "Arranque | entorno=%s nivel=%s bbdd=%s idealista=%s rapidapi=%s",
+        settings.app_env, settings.log_level,
+        settings.database_url.split("///")[-1],
+        "sí" if settings.idealista_configured else "no",
+        "sí" if settings.rapidapi_configured else "no",
+    )
     yield
 
 
@@ -80,6 +93,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(RequestLogMiddleware)
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "web" / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "web" / "static")), name="static")
@@ -334,6 +349,27 @@ def api_opportunities(
     return {"count": len(rows), "results": rows, "filters": query.model_dump()}
 
 
+def _data_status(db: Session) -> dict[str, Any]:
+    """Qué hay cargado. Una búsqueda vacía y una rota se ven igual sin esto."""
+    listings = db.scalar(select(func.count(Listing.id))) or 0
+    scored = db.scalar(select(func.count(OpportunityScore.id))) or 0
+    return {
+        "listings": listings,
+        "scored": scored,
+        "municipalities": db.scalar(select(func.count(Municipality.id))) or 0,
+        "pois": db.scalar(select(func.count(Poi.id))) or 0,
+        "rental_stats": db.scalar(select(func.count(RentalStat.id))) or 0,
+        "empty": listings == 0,
+        "unscored": listings > 0 and scored == 0,
+    }
+
+
+@app.get("/api/data-status", tags=["oportunidades"])
+def api_data_status(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Resumen de lo cargado, para saber si la base está vacía."""
+    return _data_status(db)
+
+
 def _query_opportunities(db: Session, query: OpportunityQuery) -> list[dict[str, Any]]:
     """Aplica los filtros del buscador sobre anuncios ya analizados."""
     statement = (
@@ -586,7 +622,7 @@ def api_ingest_listings(
         # el analisis sepa que las distancias son aproximadas.
         precision = item.pop("coords_precision", "exact")
         if item.get("lat") is None or item.get("lon") is None:
-            resolved = _resolve_missing_coords(db, item)
+            resolved = resolve_missing_coords(db, item)
             if resolved is None:
                 item["lat"], item["lon"] = request.lat, request.lon
                 precision = "search_center"
@@ -614,7 +650,7 @@ def api_ingest_listings(
             db.add(listing)
             created += 1
 
-        municipality = _match_municipality(db, item["municipality_name"], item["lat"], item["lon"])
+        municipality = match_municipality(db, item["municipality_name"], item["lat"], item["lon"])
         if municipality:
             listing.municipality_id = municipality.id
 
@@ -827,7 +863,7 @@ def api_ingest_boe(
             except Exception:
                 feature = None
             if feature:
-                ring = _extract_ring_safe(feature)
+                ring = extract_ring_safe(feature)
                 if ring:
                     item["lat"] = sum(p[1] for p in ring) / len(ring)
                     item["lon"] = sum(p[0] for p in ring) / len(ring)
@@ -835,7 +871,7 @@ def api_ingest_boe(
                     item["cadastral_ref"] = cadastral
 
         if item.get("lat") is None:
-            resolved = _resolve_missing_coords(db, item)
+            resolved = resolve_missing_coords(db, item)
             if resolved is None:
                 skipped_incomplete += 1
                 continue
@@ -857,7 +893,7 @@ def api_ingest_boe(
             db.add(listing)
             created += 1
 
-        municipality = _match_municipality(
+        municipality = match_municipality(
             db, item.get("municipality_name", ""), item["lat"], item["lon"]
         )
         if municipality:
@@ -1082,6 +1118,43 @@ def page_sources(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
     )
 
 
+def _render_search(
+    request: Request, db: Session, query: OpportunityQuery, **extra: Any
+) -> HTMLResponse:
+    """Pinta el buscador. Lo comparten la búsqueda, el descubrimiento y la importación."""
+    results = _query_opportunities(db, query)
+    provinces = db.execute(
+        select(Listing.province).distinct().where(Listing.province != "")
+    ).scalars().all()
+    estado = _data_status(db)
+    contexto: dict[str, Any] = {
+        "request": request, "results": results, "filters": query.model_dump(),
+        "provinces": sorted(provinces), "estado": estado,
+        "discovery": None, "import_result": None, "discovery_error": None,
+    }
+    contexto.update(extra)
+    return templates.TemplateResponse("search.html", contexto)
+
+
+def _search_query(
+    q: str | None, province: str | None, min_area_m2: float | None,
+    max_price_eur: float | None, min_discount_pct: float | None,
+    max_beach_km: float | None, require_rising_trend: bool,
+) -> OpportunityQuery:
+    return OpportunityQuery(
+        q=q or None,
+        province=province or None,
+        # Los valores por defecto se aplican aquí y no en la firma: así un
+        # campo borrado a propósito significa «sin límite» y no revienta.
+        min_area_m2=300 if min_area_m2 is None else min_area_m2,
+        max_price_eur=max_price_eur,
+        min_discount_pct=20 if min_discount_pct is None else min_discount_pct,
+        max_beach_km=max_beach_km,
+        require_rising_trend=require_rising_trend,
+        limit=200,
+    )
+
+
 @app.get("/buscar", response_class=HTMLResponse, include_in_schema=False)
 def page_search(
     request: Request,
@@ -1094,27 +1167,140 @@ def page_search(
     max_beach_km: OptionalFloat = None,
     require_rising_trend: bool = False,
 ) -> HTMLResponse:
-    query = OpportunityQuery(
-        q=q or None,
-        province=province or None,
-        # Los valores por defecto se aplican aquí y no en la firma: así un
-        # campo borrado a propósito significa «sin límite» y no revienta.
-        min_area_m2=300 if min_area_m2 is None else min_area_m2,
-        max_price_eur=max_price_eur,
-        min_discount_pct=20 if min_discount_pct is None else min_discount_pct,
-        max_beach_km=max_beach_km,
-        require_rising_trend=require_rising_trend,
-        limit=200,
+    query = _search_query(q, province, min_area_m2, max_price_eur,
+                          min_discount_pct, max_beach_km, require_rising_trend)
+    estado = _data_status(db)
+    log_operation("busqueda", anuncios=estado["listings"], puntuados=estado["scored"])
+    return _render_search(request, db, query)
+
+
+def _discovery_center(
+    db: Session, lat: float | None, lon: float | None, *names: str | None
+) -> tuple[float | None, float | None]:
+    """Punto desde el que consultar los portales.
+
+    Las fuentes de anuncios buscan por coordenadas, pero el usuario escribe un
+    municipio. Si no da coordenadas se toman las del municipio que ya está en
+    la base; sin él sólo pueden consultarse las fuentes que filtran por
+    provincia, que es lo que hacen las Subastas del BOE.
+    """
+    if lat is not None and lon is not None:
+        return lat, lon
+    for name in names:
+        if not name:
+            continue
+        found = db.execute(
+            select(Municipality).where(Municipality.name.ilike(name.strip()))
+        ).scalars().first()
+        if found:
+            return found.lat, found.lon
+    return None, None
+
+
+def _discover_params(form: Any) -> dict[str, Any]:
+    """Lee del formulario los parámetros del descubrimiento."""
+    def numero(clave: str) -> float | None:
+        valor = (form.get(clave) or "").strip()
+        try:
+            return float(valor) if valor else None
+        except ValueError:
+            return None
+
+    return {
+        "q": (form.get("q") or "").strip() or None,
+        "province": (form.get("province") or "").strip() or None,
+        "lat": numero("lat"),
+        "lon": numero("lon"),
+        "radius_km": numero("radius_km") or 25.0,
+        "min_area_m2": numero("min_area_m2"),
+        "max_area_m2": numero("max_area_m2"),
+        "max_price_eur": numero("max_price_eur"),
+        "min_discount_pct": numero("min_discount_pct"),
+        "max_beach_km": numero("max_beach_km"),
+        "require_rising_trend": "require_rising_trend" in form,
+    }
+
+
+@app.post("/buscar/descubrir", response_class=HTMLResponse, include_in_schema=False)
+async def page_discover(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    """Trae candidatas de las fuentes externas sin guardarlas todavía.
+
+    Buscar sólo en la base obligaba a poblarla antes por API. Aquí el propio
+    buscador sirve para llenarla: primero se ve qué hay fuera y después el
+    usuario decide qué incorporar.
+    """
+    form = await request.form()
+    p = _discover_params(form)
+    query = _search_query(p["q"], p["province"], p["min_area_m2"], p["max_price_eur"],
+                          p["min_discount_pct"], p["max_beach_km"], p["require_rising_trend"])
+
+    lat, lon = _discovery_center(db, p["lat"], p["lon"], p["q"], p["province"])
+    if lat is None and not p["province"]:
+        return _render_search(
+            request, db, query,
+            discovery_error=(
+                "Indica una provincia, o un municipio que ya esté en la base, "
+                "o unas coordenadas: las fuentes necesitan saber dónde buscar."
+            ),
+        )
+
+    resultado = discover(
+        db, lat=lat, lon=lon, province=p["province"],
+        radius_km=p["radius_km"],
+        min_area_m2=p["min_area_m2"], max_area_m2=p["max_area_m2"],
+        max_price_eur=p["max_price_eur"],
     )
-    results = _query_opportunities(db, query)
-    provinces = db.execute(
-        select(Listing.province).distinct().where(Listing.province != "")
-    ).scalars().all()
-    return templates.TemplateResponse(
-        "search.html",
-        {"request": request, "results": results, "filters": query.model_dump(),
-         "provinces": sorted(provinces)},
+    for candidato in resultado["candidates"]:
+        candidato["payload"] = serialize(candidato)
+    resultado["center"] = {"lat": lat, "lon": lon}
+    return _render_search(request, db, query, discovery=resultado)
+
+
+@app.post("/buscar/importar", response_class=HTMLResponse, include_in_schema=False)
+async def page_import(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    """Incorpora a la base las candidatas marcadas y las analiza."""
+    form = await request.form()
+    p = _discover_params(form)
+    query = _search_query(p["q"], p["province"], p["min_area_m2"], p["max_price_eur"],
+                          p["min_discount_pct"], p["max_beach_km"], p["require_rising_trend"])
+
+    payloads = [d for d in (deserialize(v) for v in form.getlist("candidato")) if d]
+    if not payloads:
+        return _render_search(
+            request, db, query,
+            discovery_error="No has marcado ninguna candidata para incorporar.",
+        )
+    return _render_search(request, db, query, import_result=import_candidates(db, payloads))
+
+
+@app.get("/api/discover", tags=["ingesta"])
+def api_discover(
+    db: Session = Depends(get_db),
+    lat: OptionalFloat = None,
+    lon: OptionalFloat = None,
+    province: str | None = None,
+    radius_km: float = 25.0,
+    min_area_m2: OptionalFloat = None,
+    max_area_m2: OptionalFloat = None,
+    max_price_eur: OptionalFloat = None,
+    max_results: int = Query(40, ge=1, le=200),
+) -> dict[str, Any]:
+    """Candidatas de las fuentes externas, sin guardarlas."""
+    if lat is None and not province:
+        raise HTTPException(422, "Hacen falta coordenadas o una provincia.")
+    return discover(
+        db, lat=lat, lon=lon, province=province or None, radius_km=radius_km,
+        min_area_m2=min_area_m2, max_area_m2=max_area_m2,
+        max_price_eur=max_price_eur, max_results=max_results,
     )
+
+
+@app.post("/api/discover/import", tags=["ingesta"])
+def api_discover_import(
+    candidates: list[dict[str, Any]], db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    """Incorpora a la base las candidatas que se le pasen."""
+    return import_candidates(db, candidates)
 
 
 @app.get("/oportunidad/{listing_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -1191,47 +1377,3 @@ async def source_error_handler(_request: Request, exc: SourceError) -> JSONRespo
     return JSONResponse(status_code=502, content={"ok": False, "message": str(exc)})
 
 
-def _extract_ring_safe(feature: dict[str, Any]) -> list[list[float]] | None:
-    from app.services import _extract_ring
-
-    try:
-        return _extract_ring(feature)
-    except Exception:
-        return None
-
-
-def _resolve_missing_coords(db: Session, item: dict[str, Any]) -> tuple[float, float] | None:
-    """Coordenadas del municipio del anuncio, si se reconoce por nombre."""
-    name = (item.get("municipality_name") or "").strip()
-    if not name:
-        return None
-    found = db.execute(
-        select(Municipality).where(Municipality.name.ilike(name))
-    ).scalars().first()
-    return (found.lat, found.lon) if found else None
-
-
-def _match_municipality(
-    db: Session, name: str, lat: float, lon: float
-) -> Municipality | None:
-    """Asocia un anuncio a su municipio: primero por nombre, si no por cercania."""
-    if name:
-        found = db.execute(
-            select(Municipality).where(Municipality.name.ilike(name.strip()))
-        ).scalars().first()
-        if found:
-            return found
-
-    delta = 0.25
-    candidates = db.execute(
-        select(Municipality).where(
-            Municipality.lat.between(lat - delta, lat + delta),
-            Municipality.lon.between(lon - delta, lon + delta),
-        )
-    ).scalars().all()
-    if not candidates:
-        return None
-
-    from app.analysis.geo import haversine_km
-
-    return min(candidates, key=lambda m: haversine_km(lat, lon, m.lat, m.lon))
