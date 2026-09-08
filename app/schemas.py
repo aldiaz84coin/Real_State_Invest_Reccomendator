@@ -45,6 +45,13 @@ class SimulationRequest(BaseModel):
     max_occupancy_rate: float = Field(default=0.30, gt=0, le=1)
     include_terrace: bool = True
     include_parking: bool = True
+    # Punto de acceso a la parcela: decide cual es el lindero frontal y por
+    # tanto donde se aplica el retranqueo mayor. Sin el se toma el lindero mas
+    # largo, que es el frente en la mayoria de las parcelas.
+    access_lat: float | None = Field(default=None, ge=-90, le=90)
+    access_lon: float | None = Field(default=None, ge=-180, le=180)
+    # Rumbo de las vistas que se quieren aprovechar (0 norte, 90 este).
+    view_azimuth_deg: float | None = Field(default=None, ge=0, le=360)
 
     # Explotacion
     adr_eur: float | None = Field(default=None, gt=0)

@@ -210,3 +210,35 @@ class TestScoring:
             + breakdown.location * 0.25 + breakdown.size * 0.10
         )
         assert breakdown.total == pytest.approx(expected, abs=0.01)
+
+
+class TestProvincias:
+    """El selector salía vacío y el filtro por provincia no cruzaba nombres."""
+
+    def test_estan_las_cincuenta_y_dos(self):
+        from app.provinces import names
+
+        assert len(names()) == 52
+        assert "Cantabria" in names() and "Toledo" in names()
+
+    def test_se_reconoce_como_la_escriba_cada_fuente(self):
+        from app.provinces import code_for
+
+        assert code_for("Baleares") == code_for("Illes Balears") == "07"
+        assert code_for("Vizcaya") == code_for("Bizkaia") == "48"
+        assert code_for("39") == "39"
+        assert code_for("Provincia inventada") is None
+
+    def test_las_grafias_sirven_para_filtrar(self):
+        """Una subasta dice «Baleares» y el selector «Illes Balears»."""
+        from app.provinces import spellings
+
+        formas = [f.lower() for f in spellings("Illes Balears")]
+        assert "baleares" in formas and "illes balears" in formas
+
+    def test_el_conector_del_boe_cubre_toda_espana(self):
+        """Llevaba sólo veintidós provincias: en el resto buscaba sin filtro."""
+        from app.sources.boe import BoeSubastasSource
+
+        for provincia in ("Toledo", "Zamora", "Cuenca", "Cantabria"):
+            assert BoeSubastasSource.province_code(provincia) is not None

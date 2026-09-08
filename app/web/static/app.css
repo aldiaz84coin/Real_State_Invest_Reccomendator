@@ -117,6 +117,16 @@ button:hover, .btn:hover { filter: brightness(1.08); }
 /* Una candidata que ya esta en la base se marca en gris: su casilla va
    deshabilitada y conviene que se vea por que no se puede marcar. */
 tr.ya-guardada { opacity: .55; }
+
+/* Bloque plegable dentro de una tarjeta: el razonamiento de la implantacion
+   interesa, pero no debe empujar el plano fuera de la pantalla. */
+.card-inset {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 11px 14px;
+}
+.card-inset > summary { cursor: pointer; }
 ul.clean { list-style: none; padding: 0; margin: 0; }
 ul.clean li { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: .89rem; }
 ul.clean li:last-child { border-bottom: 0; }

@@ -195,6 +195,37 @@ def shrink_polygon(ring: Ring, distance: float) -> Ring:
     return result
 
 
+def shrink_polygon_edges(ring: Ring, distances: Sequence[float]) -> Ring:
+    """Retranquea cada lindero su propia distancia.
+
+    El retranqueo frontal y el lateral no son iguales en ninguna ordenanza.
+    Aplicar el mayor a todo el perimetro, que es lo que se hacia antes, dejaba
+    parcelas pequenas sin superficie edificable por una prudencia que la
+    normativa no exige.
+    """
+    result = as_ccw(ring)
+    n = len(result)
+    if n < 3 or len(distances) < n:
+        return []
+
+    source = list(result)
+    for i in range(n):
+        distance = distances[i]
+        if distance <= 0:
+            continue
+        ax, ay = source[i]
+        bx, by = source[(i + 1) % n]
+        edge_len = math.hypot(bx - ax, by - ay)
+        if edge_len < 1e-9:
+            continue
+        # En orientacion antihoraria, la normal interior es (-dy, dx)/|e|.
+        nx, ny = -(by - ay) / edge_len, (bx - ax) / edge_len
+        result = clip_halfplane(result, (ax + nx * distance, ay + ny * distance), (nx, ny))
+        if len(result) < 3:
+            return []
+    return result
+
+
 def bounding_box(ring: Ring) -> tuple[float, float, float, float]:
     xs = [p[0] for p in ring]
     ys = [p[1] for p in ring]

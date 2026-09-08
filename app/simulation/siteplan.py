@@ -23,6 +23,7 @@ from app.analysis.geo import (
     polygon_contains_polygon,
     rectangle,
     shrink_polygon,
+    shrink_polygon_edges,
 )
 from app.simulation.catalog import PrefabModel, get_model
 
@@ -52,6 +53,12 @@ class SitePlanOptions:
     orient_to_south: bool = True
     access_lat: float | None = None
     access_lon: float | None = None
+    # Rumbo (grados desde el norte, sentido horario) hacia lo que se quiere
+    # mirar: el mar, un valle, la montana. Si se da, pesa en la orientacion.
+    view_azimuth_deg: float | None = None
+    # Distancia de compromiso al lindero de acceso: lo bastante cerca para que
+    # el camino sea corto y lo bastante lejos para no vivir sobre la calle.
+    ideal_access_distance_m: float = 12.0
 
 
 @dataclass
@@ -69,6 +76,7 @@ class SitePlan:
     compliance: dict = field(default_factory=dict)
     origin: dict = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    placement: dict = field(default_factory=dict)
     feasible: bool = True
 
     def as_dict(self) -> dict:
@@ -86,6 +94,7 @@ class SitePlan:
             "compliance": self.compliance,
             "origin": self.origin,
             "warnings": self.warnings,
+            "placement": self.placement,
             "feasible": self.feasible,
         }
 
@@ -136,30 +145,36 @@ def build_site_plan(
     parcel_area = polygon_area(parcel)
     perimeter = _perimeter(parcel)
 
-    # --- superficie edificable tras retranqueos ---------------------------
-    # Se aplica el retranqueo mas restrictivo a todo el perimetro: es el
-    # criterio prudente cuando no se sabe cual es el lindero frontal.
-    setback = max(opts.setback_front_m, opts.setback_sides_m)
-    buildable = shrink_polygon(parcel, setback)
-    buildable_area = polygon_area(buildable) if len(buildable) >= 3 else 0.0
-
-    if buildable_area <= 0:
-        plan.feasible = False
-        plan.parcel = _polygon_payload(parcel, projection)
-        plan.warnings = [
-            f"Con retranqueos de {setback:.0f} m no queda superficie edificable en una "
-            f"parcela de {parcel_area:.0f} m2."
-        ]
-        plan.metrics = {"parcel_area_m2": round(parcel_area, 1), "buildable_area_m2": 0.0}
-        plan.origin = {"lat": origin_lat, "lon": origin_lon}
-        return plan
-
-    # --- punto de acceso ---------------------------------------------------
+    # --- punto de acceso ----------------------------------------------------
+    # Se resuelve antes que los retranqueos porque decide cual es el lindero
+    # frontal, y frontal y lateral no retranquean lo mismo.
     if opts.access_lat is not None and opts.access_lon is not None:
         access = projection.to_meters(opts.access_lon, opts.access_lat)
         access = _closest_point_on_ring(access, parcel)
     else:
         access = _longest_edge_midpoint(parcel)
+
+    # --- superficie edificable tras retranqueos ---------------------------
+    front_index = _nearest_edge_index(parcel, access)
+    setbacks = [
+        opts.setback_front_m if i == front_index else opts.setback_sides_m
+        for i in range(len(parcel))
+    ]
+    buildable = shrink_polygon_edges(parcel, setbacks)
+    buildable_area = polygon_area(buildable) if len(buildable) >= 3 else 0.0
+    setback = max(opts.setback_front_m, opts.setback_sides_m)
+
+    if buildable_area <= 0:
+        plan.feasible = False
+        plan.parcel = _polygon_payload(parcel, projection)
+        plan.warnings = [
+            f"Con retranqueos de {opts.setback_front_m:.0f} m al frente y "
+            f"{opts.setback_sides_m:.0f} m a linderos no queda superficie edificable "
+            f"en una parcela de {parcel_area:.0f} m2."
+        ]
+        plan.metrics = {"parcel_area_m2": round(parcel_area, 1), "buildable_area_m2": 0.0}
+        plan.origin = {"lat": origin_lat, "lon": origin_lon}
+        return plan
 
     # --- colocacion de la vivienda -----------------------------------------
     placement = _find_placement(buildable, model, access, opts)
@@ -179,7 +194,7 @@ def build_site_plan(
         plan.origin = {"lat": origin_lat, "lon": origin_lon}
         return plan
 
-    cx, cy, angle, clearance = placement
+    cx, cy, angle, clearance, criteria = placement
     house_ring = rectangle(cx, cy, model.length_m, model.width_m, angle)
     footprint = model.length_m * model.width_m
 
@@ -299,6 +314,15 @@ def build_site_plan(
         "bbox_m": [round(v, 1) for v in bounding_box(parcel)],
     }
     plan.compliance = compliance
+    plan.placement = {
+        "angle_deg": round(angle, 1),
+        "clearance_m": round(clearance, 2),
+        "front_setback_m": opts.setback_front_m,
+        "side_setback_m": opts.setback_sides_m,
+        "criteria": {k: round(v, 3) for k, v in criteria.items()},
+        "weights": CRITERIA_WEIGHTS,
+        "reasons": _placement_rationale(criteria, angle, clearance, opts),
+    }
     plan.origin = {"lat": origin_lat, "lon": origin_lon}
     plan.warnings = warnings
     return plan
@@ -309,13 +333,13 @@ def build_site_plan(
 
 def _find_placement(
     buildable: Ring, model: PrefabModel, access: tuple[float, float], opts: SitePlanOptions
-) -> tuple[float, float, float, float] | None:
+) -> tuple[float, float, float, float, dict[str, float]] | None:
     """Busca centro y giro de la casa dentro del area edificable.
 
     Se prueban las orientaciones de los propios linderos (una casa paralela a
     la parcela es lo que se construye en la practica) sobre una rejilla de
-    posiciones, y se elige la que maximiza holgura, orientacion sur y cercania
-    al acceso.
+    posiciones, y se puntua cada una con criterios que se pueden explicar: no
+    vale colocarla en el centro geometrico y ya esta.
     """
     angles = sorted({round(a) % 180 for a in _edge_angles(buildable)} | {0, 90})
     min_x, min_y, max_x, max_y = bounding_box(buildable)
@@ -323,7 +347,7 @@ def _find_placement(
     span = max(max_x - min_x, max_y - min_y)
     step = max(0.75, span / 28.0)
 
-    best: tuple[float, float, float, float] | None = None
+    best: tuple[float, float, float, float, dict[str, float]] | None = None
     best_score = float("-inf")
 
     for angle in angles:
@@ -335,38 +359,123 @@ def _find_placement(
                     candidate = rectangle(x, y, model.length_m, model.width_m, float(angle))
                     if polygon_contains_polygon(buildable, candidate):
                         clearance = min(distance_to_edges(p, buildable) for p in candidate)
-                        score = _placement_score(x, y, float(angle), clearance, access, opts)
+                        criteria = _placement_criteria(
+                            x, y, float(angle), clearance, access, opts,
+                            (min_x, min_y, max_x, max_y),
+                        )
+                        score = sum(
+                            CRITERIA_WEIGHTS[nombre] * valor
+                            for nombre, valor in criteria.items()
+                        )
                         if score > best_score:
                             best_score = score
-                            best = (x, y, float(angle), clearance)
+                            best = (x, y, float(angle), clearance, criteria)
                 x += step
             y += step
 
     return best
 
 
-def _placement_score(
+# Peso de cada criterio de implantacion. Estan aqui, con nombre, para que la
+# ficha pueda explicar por que la casa acaba donde acaba: una colocacion que no
+# se puede justificar no sirve para defender la inversion ante nadie.
+CRITERIA_WEIGHTS: dict[str, float] = {
+    "soleamiento": 30.0,      # fachada larga al sur
+    "jardin_al_sur": 20.0,    # espacio libre delante de esa fachada
+    "holgura": 20.0,          # separacion real a los linderos
+    "acceso": 15.0,           # camino corto pero sin vivir sobre la calle
+    "vistas": 15.0,           # fachada principal hacia lo que interesa mirar
+}
+
+
+def _placement_criteria(
     x: float,
     y: float,
     angle: float,
     clearance: float,
     access: tuple[float, float],
     opts: SitePlanOptions,
-) -> float:
-    """Combina holgura, soleamiento y longitud del camino de acceso."""
-    score = clearance * 3.0
+    box: tuple[float, float, float, float],
+) -> dict[str, float]:
+    """Valora una colocacion criterio a criterio, cada uno entre 0 y 1."""
+    min_x, min_y, max_x, max_y = box
+    alto = max(max_y - min_y, 1e-6)
+    diagonal = math.hypot(max_x - min_x, max_y - min_y) or 1.0
+
+    criterios: dict[str, float] = {}
 
     if opts.orient_to_south:
-        # El lado largo mirando al sur (angulo cerca de 0 o 180) da mejor
-        # soleamiento a la fachada principal y a la terraza.
-        deviation = min(abs(angle % 180), 180 - abs(angle % 180))
-        score += 6.0 * math.cos(math.radians(2 * deviation))
-        # Colocar la casa hacia el norte de la parcela deja el jardin al sur.
-        score += y * 0.10
+        # Con giro 0 el lado largo corre este-oeste, o sea que la fachada larga
+        # mira al sur: es la que mas horas de sol recibe en toda Espana.
+        desviacion = min(abs(angle % 180), 180 - abs(angle % 180))
+        criterios["soleamiento"] = (math.cos(math.radians(2 * desviacion)) + 1) / 2
+        # Y la casa hacia el norte de la parcela deja libre y soleado el sur,
+        # que es donde van la terraza y el jardin.
+        criterios["jardin_al_sur"] = (y - min_y) / alto
+    else:
+        criterios["soleamiento"] = 0.0
+        criterios["jardin_al_sur"] = 0.0
 
-    # Un camino largo es obra y coste, asi que penaliza en proporcion suave.
-    score -= 0.12 * math.hypot(x - access[0], y - access[1])
-    return score
+    # La holgura se satura: pasados unos 10 m mas separacion ya no aporta.
+    criterios["holgura"] = min(clearance / 10.0, 1.0)
+
+    # Ni pegada al acceso ni al fondo de la parcela. Vale 1 en la distancia de
+    # compromiso y cae de forma suave a los lados.
+    distancia = math.hypot(x - access[0], y - access[1])
+    ideal = max(opts.ideal_access_distance_m, 1.0)
+    criterios["acceso"] = math.exp(-((distancia - ideal) ** 2) / (2 * (ideal ** 2)))
+    if distancia > diagonal:
+        criterios["acceso"] = 0.0
+
+    if opts.view_azimuth_deg is None:
+        criterios["vistas"] = 0.0
+    else:
+        # La fachada larga mira al rumbo de las vistas cuando su normal
+        # coincide con el. Con giro 0 esa normal apunta al sur (180 grados).
+        rumbo_fachada = (180.0 - angle) % 360.0
+        delta = abs((rumbo_fachada - opts.view_azimuth_deg + 180.0) % 360.0 - 180.0)
+        criterios["vistas"] = (math.cos(math.radians(delta)) + 1) / 2
+
+    return criterios
+
+
+def _placement_rationale(criteria: dict[str, float], angle: float,
+                         clearance: float, opts: SitePlanOptions) -> list[str]:
+    """Traduce la puntuacion a frases, que es lo que lee quien decide."""
+    razones: list[str] = []
+
+    if opts.orient_to_south:
+        desviacion = min(abs(angle % 180), 180 - abs(angle % 180))
+        if desviacion <= 15:
+            razones.append(
+                "Fachada larga al sur: es la orientacion con mas horas de sol y la "
+                "que permite poner ahi la terraza y el estar."
+            )
+        else:
+            razones.append(
+                f"La fachada larga queda a {desviacion:.0f} grados del sur porque los "
+                "linderos de la parcela no dan para mas: la casa se coloca paralela a "
+                "ellos, que es como se construye y como manda el retranqueo."
+            )
+        if criteria.get("jardin_al_sur", 0) >= 0.5:
+            razones.append(
+                "La vivienda se retranquea hacia el norte de la parcela para dejar "
+                "libre y soleado todo el espacio del sur."
+            )
+
+    razones.append(
+        f"Queda {clearance:.1f} m de holgura por encima del retranqueo exigido, "
+        f"o sea {clearance + opts.setback_sides_m:.1f} m al lindero mas proximo."
+    )
+    razones.append(
+        f"A una distancia de compromiso del acceso (objetivo {opts.ideal_access_distance_m:.0f} m): "
+        "camino de entrada corto sin poner la casa encima del vial."
+    )
+    if opts.view_azimuth_deg is not None:
+        razones.append(
+            f"Se ha tenido en cuenta la vista hacia el rumbo {opts.view_azimuth_deg:.0f} grados."
+        )
+    return razones
 
 
 def _attach_terrace(
@@ -547,6 +656,34 @@ def _longest_edge_midpoint(ring: Ring) -> tuple[float, float]:
             best_length = length
             best_point = ((x1 + x2) / 2, (y1 + y2) / 2)
     return best_point
+
+
+def _nearest_edge_index(ring: Ring, point: tuple[float, float]) -> int:
+    """Indice del lindero mas cercano al punto de acceso: el frontal.
+
+    Sin esto habia que aplicar el retranqueo frontal a todo el perimetro por no
+    saber cual era el frente, y eso se comia parcelas enteras.
+    """
+    mejor, mejor_distancia = 0, float("inf")
+    n = len(ring)
+    for i in range(n):
+        a, b = ring[i], ring[(i + 1) % n]
+        distancia = math.hypot(*[c - d for c, d in zip(_segment_closest(a, b, point), point)])
+        if distancia < mejor_distancia:
+            mejor, mejor_distancia = i, distancia
+    return mejor
+
+
+def _segment_closest(
+    a: tuple[float, float], b: tuple[float, float], point: tuple[float, float]
+) -> tuple[float, float]:
+    """Punto del segmento a-b mas proximo a otro punto."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    largo = dx * dx + dy * dy
+    if largo < 1e-12:
+        return a
+    t = max(0.0, min(1.0, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / largo))
+    return (a[0] + t * dx, a[1] + t * dy)
 
 
 def _closest_point_on_ring(point: tuple[float, float], ring: Ring) -> tuple[float, float]:

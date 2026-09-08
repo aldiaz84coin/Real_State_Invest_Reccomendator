@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db, init_db
+from app.provinces import names as province_names, spellings as province_spellings
 from app.discovery import (
     deserialize, discover, extract_ring_safe, import_candidates,
     match_municipality, resolve_missing_coords, serialize,
@@ -385,7 +386,14 @@ def _query_opportunities(db: Session, query: OpportunityQuery) -> list[dict[str,
     if query.max_price_eur:
         statement = statement.where(Listing.price_eur <= query.max_price_eur)
     if query.province:
-        statement = statement.where(Listing.province.ilike(f"%{query.province}%"))
+        # Cada fuente escribe la provincia a su manera; comparar con el nombre
+        # del selector dejaba fuera anuncios que sí eran de esa provincia.
+        from sqlalchemy import or_
+
+        statement = statement.where(
+            or_(*[Listing.province.ilike(f"%{forma}%")
+                  for forma in province_spellings(query.province)])
+        )
     if query.q:
         like = f"%{query.q}%"
         statement = statement.where(
@@ -507,8 +515,12 @@ def _simulate(request: SimulationRequest, db: Session) -> dict[str, Any]:
         include_terrace=request.include_terrace,
         include_parking=request.include_parking,
         include_pool=request.include_pool,
-        access_lat=lat,
-        access_lon=lon,
+        # Sin punto de acceso explicito se deja que lo deduzca del lindero mas
+        # largo: pasarle el centro de la parcela, como se hacia antes, elegia
+        # un lindero cualquiera como frontal.
+        access_lat=request.access_lat,
+        access_lon=request.access_lon,
+        view_azimuth_deg=request.view_azimuth_deg,
     )
 
     overrides = {
@@ -1123,13 +1135,12 @@ def _render_search(
 ) -> HTMLResponse:
     """Pinta el buscador. Lo comparten la búsqueda, el descubrimiento y la importación."""
     results = _query_opportunities(db, query)
-    provinces = db.execute(
-        select(Listing.province).distinct().where(Listing.province != "")
-    ).scalars().all()
     estado = _data_status(db)
     contexto: dict[str, Any] = {
         "request": request, "results": results, "filters": query.model_dump(),
-        "provinces": sorted(provinces), "estado": estado,
+        # Las cincuenta y dos provincias, no las que haya en la base: con la
+        # base vacía el selector salía vacío, que es justo cuando hace falta.
+        "provinces": province_names(), "estado": estado,
         "discovery": None, "import_result": None, "discovery_error": None,
     }
     contexto.update(extra)
@@ -1235,15 +1246,6 @@ async def page_discover(request: Request, db: Session = Depends(get_db)) -> HTML
                           p["min_discount_pct"], p["max_beach_km"], p["require_rising_trend"])
 
     lat, lon = _discovery_center(db, p["lat"], p["lon"], p["q"], p["province"])
-    if lat is None and not p["province"]:
-        return _render_search(
-            request, db, query,
-            discovery_error=(
-                "Indica una provincia, o un municipio que ya esté en la base, "
-                "o unas coordenadas: las fuentes necesitan saber dónde buscar."
-            ),
-        )
-
     resultado = discover(
         db, lat=lat, lon=lon, province=p["province"],
         radius_km=p["radius_km"],
@@ -1253,6 +1255,7 @@ async def page_discover(request: Request, db: Session = Depends(get_db)) -> HTML
     for candidato in resultado["candidates"]:
         candidato["payload"] = serialize(candidato)
     resultado["center"] = {"lat": lat, "lon": lon}
+    resultado["radius_km"] = p["radius_km"]
     return _render_search(request, db, query, discovery=resultado)
 
 
@@ -1286,8 +1289,6 @@ def api_discover(
     max_results: int = Query(40, ge=1, le=200),
 ) -> dict[str, Any]:
     """Candidatas de las fuentes externas, sin guardarlas."""
-    if lat is None and not province:
-        raise HTTPException(422, "Hacen falta coordenadas o una provincia.")
     return discover(
         db, lat=lat, lon=lon, province=province or None, radius_km=radius_km,
         min_area_m2=min_area_m2, max_area_m2=max_area_m2,

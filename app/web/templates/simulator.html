@@ -236,13 +236,44 @@
   {% if not sp.feasible %}
   <div class="alert bad">
     <strong>La casa no cabe en esta parcela con los retranqueos indicados.</strong>
-    Los costes y el plan de negocio de abajo siguen siendo válidos, pero no hay
-    implantación que dibujar. Prueba con un modelo más pequeño, una parcela mayor
-    o retranqueos menores si la ordenanza lo permite.
+    Abajo se dibujan igualmente la parcela y el área que queda edificable, que es
+    donde se ve el porqué. Prueba con un modelo más pequeño, una parcela mayor o
+    retranqueos menores si la ordenanza lo permite.
   </div>
   {% endif %}
 
   {% for w in sp.warnings %}<div class="alert warn">{{ w }}</div>{% endfor %}
+
+  {% if sp.placement and sp.placement.reasons %}
+  <details class="card-inset" style="margin-bottom:12px">
+    <summary><strong>Por qué la casa va justo ahí</strong></summary>
+    <ul class="note" style="margin:10px 0 6px 18px; line-height:1.7">
+      {% for r in sp.placement.reasons %}<li>{{ r }}</li>{% endfor %}
+    </ul>
+    <table style="margin-top:6px">
+      <thead><tr><th>Criterio</th><th class="num">Peso</th><th class="num">Cumple</th></tr></thead>
+      <tbody>
+      {% for nombre, valor in sp.placement.criteria.items() %}
+        <tr>
+          <td>{{ {'soleamiento': 'Fachada larga al sur',
+                  'jardin_al_sur': 'Espacio libre soleado al sur',
+                  'holgura': 'Separación a linderos',
+                  'acceso': 'Distancia al acceso',
+                  'vistas': 'Orientación a las vistas'}.get(nombre, nombre) }}</td>
+          <td class="num">{{ sp.placement.weights[nombre] | round | int }}</td>
+          <td class="num">{{ (valor * 100) | round | int }}%</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="note" style="margin-top:8px">
+      Se prueban las orientaciones de los propios linderos sobre una rejilla de
+      posiciones y gana la que suma más. El retranqueo frontal
+      ({{ sp.placement.front_setback_m }} m) se aplica al lindero de acceso y el
+      lateral ({{ sp.placement.side_setback_m }} m) al resto.
+    </p>
+  </details>
+  {% endif %}
 
   {% set cat = sp.cadastre or {} %}
   <div class="alert {{ 'info' if cat.found else 'warn' }}" style="margin-bottom:12px">
@@ -269,7 +300,6 @@
     {% endif %}
   </div>
 
-  {% if sp.feasible %}
   <div class="tabs">
     <button type="button" class="active" data-view="view2d">Plano 2D</button>
     <button type="button" data-view="view3d">Vista 3D</button>
@@ -277,10 +307,11 @@
     <button type="button" data-view="viewmodel">Modelo elegido</button>
   </div>
 
+  {# Aunque la casa no quepa se dibuja igual: la parcela y el area edificable
+     son justo lo que hay que mirar para entender por que no cabe. #}
   <div id="view2d">{{ sp.svg | safe }}</div>
   <div id="viewmap" hidden><div id="map" style="height:460px"></div></div>
-  {% endif %}
-  <div id="viewmodel"{{ ' hidden' if sp.feasible }}>
+  <div id="viewmodel" hidden>
     <div class="grid cols-2">
       <div>
         {% if result.model.image_url %}

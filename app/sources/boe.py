@@ -15,17 +15,8 @@ import re
 from html.parser import HTMLParser
 from typing import Any
 
+from app.provinces import code_for
 from app.sources.base import BaseSource, SourceError, SourceStatus
-
-# Codigos de provincia del INE, que es lo que usa el portal en sus filtros.
-PROVINCE_CODES: dict[str, str] = {
-    "cantabria": "39", "asturias": "33", "malaga": "29", "granada": "18",
-    "almeria": "04", "cadiz": "11", "murcia": "30", "alicante": "03",
-    "valencia": "46", "castellon": "12", "tarragona": "43", "girona": "17",
-    "barcelona": "08", "baleares": "07", "las palmas": "35",
-    "santa cruz de tenerife": "38", "pontevedra": "36", "a coruna": "15",
-    "lugo": "27", "guipuzcoa": "20", "vizcaya": "48", "huelva": "21",
-}
 
 # Etiquetas del detalle de subasta que interesan, normalizadas sin acentos.
 FIELD_LABELS = {
@@ -115,6 +106,10 @@ class _TableParser(HTMLParser):
 class BoeSubastasSource(BaseSource):
     key = "boe_subastas"
     name = "Subastas del BOE (inmuebles)"
+    radius_note = (
+        "No usa radio: filtra por provincia, o busca en toda España si no se "
+        "indica ninguna."
+    )
     kind = "listings"
     required = False
     docs_url = "https://subastas.boe.es/"
@@ -223,11 +218,8 @@ class BoeSubastasSource(BaseSource):
 
     @staticmethod
     def province_code(province: str | None) -> str | None:
-        if not province:
-            return None
-        if province.isdigit():
-            return province.zfill(2)
-        return PROVINCE_CODES.get(_normalize(province))
+        """Codigo INE de la provincia. Sin el, la busqueda sale sin filtro."""
+        return code_for(province)
 
     @staticmethod
     def parse_result_ids(html: str) -> list[str]:
