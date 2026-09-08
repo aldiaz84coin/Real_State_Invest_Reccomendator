@@ -475,20 +475,25 @@ def _simulate(request: SimulationRequest, db: Session) -> dict[str, Any]:
         if value is not None
     }
 
-    result = run_full_simulation(
-        db,
-        listing=listing,
-        land_price_eur=land_price,
-        parcel_area_m2=area,
-        lat=lat,
-        lon=lon,
-        model_id=request.model_id,
-        cost_assumptions=costs,
-        rental_overrides=overrides,
-        site_options=site_options,
-        use_cadastre=request.use_cadastre,
-        use_cadastral_area=request.use_cadastral_area,
-    )
+    try:
+        result = run_full_simulation(
+            db,
+            listing=listing,
+            land_price_eur=land_price,
+            parcel_area_m2=area,
+            lat=lat,
+            lon=lon,
+            model_id=request.model_id,
+            cost_assumptions=costs,
+            rental_overrides=overrides,
+            site_options=site_options,
+            use_cadastre=request.use_cadastre,
+            use_cadastral_area=request.use_cadastral_area,
+            )
+    except ValueError as exc:
+        # Un modelo desconocido llegaba como error 500; es un dato de entrada
+        # inválido y debe decirse cuáles son los válidos.
+        raise HTTPException(422, str(exc)) from None
 
     if request.save_as:
         saved = Simulation(
@@ -869,13 +874,27 @@ def api_probe_boe(
                 "is_land": source.is_land(detail),
                 "normalized": source.normalize(detail),
             }
-        identifiers = source.search(province, max_results=10)
+        # Se enseñan todos los intentos, no sólo el resultado final: decir
+        # "0 subastas" sin más no permite saber si falla el filtro, la ruta o
+        # es que de verdad no hay ninguna.
+        attempts = source.search_attempts(province, max_results=20)
+        found = next((ids for _, ids, _ in attempts if ids), [])
         return {
             "province": province,
             "province_code": source.province_code(province),
-            "auctions_found": len(identifiers),
-            "ids": identifiers,
-            "hint": "Añade ?id_sub=<id> para ver el detalle parseado de una.",
+            "auctions_found": len(found),
+            "ids": found[:20],
+            "attempts": [
+                {"strategy": nombre, "ids_found": len(ids), **info}
+                for nombre, ids, info in attempts
+            ],
+            "hint": (
+                "Añade ?id_sub=<id> para ver el detalle parseado de una."
+                if found else
+                "Ninguna estrategia devolvió subastas. En cada intento va el "
+                "estado HTTP, el tamaño de la respuesta, cuántos enlaces de "
+                "cada forma hay y un extracto del texto de la página."
+            ),
         }
     except SourceError as exc:
         raise HTTPException(502, str(exc)) from None

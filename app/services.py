@@ -207,6 +207,16 @@ def _rental_payload(stat: RentalStat, reference: str, distance: float, basis: st
     }
 
 
+def _resolve_model_image(model_id: str) -> str | None:
+    """Foto real del modelo: una URL configurada o el fichero subido."""
+    from app.simulation.catalog import image_path_for
+
+    configured = get_settings().prefab_image_url(model_id)
+    if configured:
+        return configured
+    return f"/api/prefab-models/{model_id}/image" if image_path_for(model_id) else None
+
+
 def run_full_simulation(
     db: Session,
     *,
