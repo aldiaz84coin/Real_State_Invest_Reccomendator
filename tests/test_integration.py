@@ -473,6 +473,15 @@ class TestDescubrimientoWeb:
         assert "toda España" in respuesta.text
         assert 'name="candidato"' in respuesta.text
 
+    def test_los_campos_numericos_admiten_cualquier_valor(self, client):
+        """`step` no es sólo el salto de las flechas: el navegador rechazaba
+        cualquier valor fuera del escalón, y «radio 25» salía inválido."""
+        html = client.get("/buscar").text
+        import re
+
+        pasos = re.findall(r'<input type="number"[^>]*step="([^"]+)"', html)
+        assert pasos and all(p == "any" for p in pasos)
+
     def test_dice_que_los_portales_necesitan_un_punto(self, client, fuentes_simuladas):
         """Sin coordenadas la tabla se quedaba a medias sin explicar por qué."""
         respuesta = client.post("/buscar/descubrir", data={"province": "Cantabria"})

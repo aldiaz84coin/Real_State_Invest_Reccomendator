@@ -1003,10 +1003,22 @@ def api_probe_ine_tourism(
 def api_probe_boe(
     province: str | None = Query(None),
     id_sub: str | None = Query(None, description="Diagnostica una subasta concreta"),
+    form: bool = Query(False, description="Lee los campos que admite el formulario"),
 ) -> dict[str, Any]:
     """Diagnostica el parseo del portal de subastas contra datos reales."""
     source = BoeSubastasSource()
     try:
+        if form:
+            # Los parametros de este portal no estan documentados: en lugar de
+            # seguir probando combinaciones, se lee el formulario y se ve que
+            # nombres y que codigos admite de verdad.
+            campos = source.form_fields()
+            return {
+                "fields": {
+                    nombre: opciones[:60] for nombre, opciones in campos.items()
+                },
+                "field_names": sorted(campos),
+            }
         if id_sub:
             detail = source.detail(id_sub)
             return {

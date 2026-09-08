@@ -124,20 +124,20 @@ class BoeSubastasSource(BaseSource):
 
     def search_strategies(
         self, province: str | None, max_results: int
-    ) -> list[tuple[str, dict[str, Any]]]:
-        """Juegos de parametros a probar, del mas especifico al mas simple.
+    ) -> list[tuple[str, str, dict[str, Any]]]:
+        """Rutas y parametros a probar, del mas especifico al mas simple.
 
-        La forma exacta de la busqueda del portal no esta documentada y sus
-        formularios han cambiado con los anos, asi que en vez de fijar una sola
-        se prueban varias y se usa la primera que devuelva subastas. La ultima
-        es deliberadamente minima: si ninguna funciona, al menos dice si el
-        portal responde.
+        Cada estrategia lleva su propia ruta porque el portal separa el
+        formulario del listado: `subastas_ava.php` pinta el buscador y
+        `consultas_subastas_ava.php` devuelve los resultados. Pedirselos todos
+        al formulario daba HTTP 200 con la misma pagina de 6,5 KB, que es la
+        firma de "aqui no hay resultados, esto es el formulario".
         """
         code = self.province_code(province)
-        estrategias: list[tuple[str, dict[str, Any]]] = []
+        estrategias: list[tuple[str, str, dict[str, Any]]] = []
 
         base: dict[str, Any] = {
-            "accion": "Buscar_Simple",
+            "accion": "Buscar",
             "campo[0]": "SUBASTA.ESTADO",
             "dato[0]": "EJ",
             "campo[1]": "BIEN.TIPO",
@@ -149,24 +149,22 @@ class BoeSubastasSource(BaseSource):
         if code:
             base["campo[2]"] = "BIEN.PROVINCIA"
             base["dato[2]"] = code
-        estrategias.append(("avanzada", dict(base)))
 
-        # Igual pero con la accion que usa el boton del formulario.
-        buscar = dict(base, accion="Buscar")
-        estrategias.append(("avanzada-buscar", buscar))
+        # La ruta del listado es la que de verdad devuelve subastas.
+        estrategias.append(("listado", "consultas_subastas_ava.php", dict(base)))
+        estrategias.append(
+            ("listado-simple", "consultas_subastas_ava.php",
+             {"accion": "Buscar", "page_hits": 50,
+              **({"campo[0]": "BIEN.PROVINCIA", "dato[0]": code} if code else {})})
+        )
+        # Sin filtros: si el portal responde con subastas, el problema son los
+        # parametros y no el acceso.
+        estrategias.append(("listado-sin-filtros", "consultas_subastas_ava.php", {}))
 
-        # La accion de paginacion, que en este portal tambien lista.
-        estrategias.append(("avanzada-mas", dict(base, accion="Mas")))
-
-        # Busqueda simple: sin filtros de tipo, por si los campos han cambiado.
-        simple: dict[str, Any] = {"accion": "Buscar_Simple", "page_hits": 50}
-        if code:
-            simple["campo[0]"] = "BIEN.PROVINCIA"
-            simple["dato[0]"] = code
-        estrategias.append(("simple", simple))
-
-        # Sin ningun parametro: sirve para saber si el portal esta vivo.
-        estrategias.append(("sin-filtros", {}))
+        # Y las del formulario, que es donde se buscaba antes. Se conservan por
+        # si el portal vuelve a servir resultados desde ahi.
+        estrategias.append(("formulario", "subastas_ava.php", dict(base)))
+        estrategias.append(("formulario-sin-filtros", "subastas_ava.php", {}))
         return estrategias
 
     def search(
@@ -187,12 +185,13 @@ class BoeSubastasSource(BaseSource):
     ) -> list[tuple[str, list[str], dict[str, Any]]]:
         """Cada estrategia probada con lo que devolvio. Lo usa el diagnostico."""
         resultados: list[tuple[str, list[str], dict[str, Any]]] = []
-        for nombre, params in self.search_strategies(province, max_results):
-            info: dict[str, Any] = {"params": {k: str(v) for k, v in params.items()}}
+        for nombre, ruta, params in self.search_strategies(province, max_results):
+            info: dict[str, Any] = {
+                "path": ruta,
+                "params": {k: str(v) for k, v in params.items()},
+            }
             try:
-                response = self.request(
-                    "GET", f"{self.base_url}/subastas_ava.php", params=params
-                )
+                response = self.request("GET", f"{self.base_url}/{ruta}", params=params)
             except SourceError as exc:
                 info["error"] = str(exc)[:300]
                 resultados.append((nombre, [], info))
@@ -215,6 +214,20 @@ class BoeSubastasSource(BaseSource):
             if ids:
                 break
         return resultados
+
+    def form_fields(self, path: str = "subastas_ava.php") -> dict[str, list[dict[str, str]]]:
+        """Campos y valores que admite el formulario de busqueda del portal.
+
+        Existe porque los parametros de este portal no estan documentados en
+        ninguna parte: en vez de seguir probando combinaciones a ciegas, se lee
+        el propio formulario y se ve que nombres y que valores acepta.
+        """
+        response = self.request("GET", f"{self.base_url}/{path}")
+        if response.status_code != 200:
+            raise SourceError(f"BOE HTTP {response.status_code} en {path}")
+        parser = _FormParser()
+        parser.feed(response.text)
+        return parser.fields
 
     @staticmethod
     def province_code(province: str | None) -> str | None:
@@ -316,6 +329,43 @@ class BoeSubastasSource(BaseSource):
 
     def check(self) -> SourceStatus:
         return self._timed_probe(f"{self.base_url}/subastas_ava.php")
+
+
+class _FormParser(HTMLParser):
+    """Saca los select y sus opciones del formulario de busqueda.
+
+    Es la forma de saber que parametros admite el portal sin documentacion:
+    los nombres de campo y los codigos de provincia salen del propio HTML.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.fields: dict[str, list[dict[str, str]]] = {}
+        self._current: str | None = None
+        self._option: dict[str, str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        atributos = {k: (v or "") for k, v in attrs}
+        if tag == "select":
+            self._current = atributos.get("name") or atributos.get("id") or ""
+            self.fields.setdefault(self._current, [])
+        elif tag == "option" and self._current is not None:
+            self._option = {"value": atributos.get("value", ""), "label": ""}
+        elif tag == "input":
+            nombre = atributos.get("name")
+            if nombre and atributos.get("type") not in ("submit", "button", "image"):
+                self.fields.setdefault(nombre, [])
+
+    def handle_data(self, data: str) -> None:
+        if self._option is not None:
+            self._option["label"] += data.strip()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "option" and self._option is not None and self._current is not None:
+            self.fields[self._current].append(self._option)
+            self._option = None
+        elif tag == "select":
+            self._current = None
 
 
 def _count_patterns(html: str) -> dict[str, int]:

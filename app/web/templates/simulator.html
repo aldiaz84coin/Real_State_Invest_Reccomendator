@@ -34,16 +34,16 @@
     {% endif %}
     <div class="filters">
       <div><label>Precio del terreno (€)</label>
-        <input type="number" name="land_price_eur" step="500" required
+        <input type="number" name="land_price_eur" step="any" required
                value="{{ form.land_price_eur if form else (listing.price_eur | round | int if listing else (preset.typical_price_eur | round | int)) }}"></div>
       <div><label>Superficie (m²)</label>
-        <input type="number" name="parcel_area_m2" step="10" required
+        <input type="number" name="parcel_area_m2" step="any" required
                value="{{ form.parcel_area_m2 if form else (listing.area_m2 | round | int if listing else (preset.typical_area_m2 | round | int)) }}"></div>
       <div><label>Latitud</label>
-        <input type="number" name="lat" step="0.000001" required
+        <input type="number" name="lat" step="any" required
                value="{{ form.lat if form else (listing.lat if listing else preset.lat) }}"></div>
       <div><label>Longitud</label>
-        <input type="number" name="lon" step="0.000001" required
+        <input type="number" name="lon" step="any" required
                value="{{ form.lon if form else (listing.lon if listing else preset.lon) }}"></div>
       <div>
         <label>Comunidad autónoma (fiscalidad)</label>
@@ -128,27 +128,27 @@
     </div>
     <div class="filters">
       <div class="check"><input type="checkbox" id="pool" name="include_pool" {{ 'checked' if form and form.include_pool }}><label for="pool">Con piscina</label></div>
-      <div><label>Coste piscina (€)</label><input type="number" name="pool_eur" step="500" value="{{ form.pool_eur if form else 22000 }}"></div>
+      <div><label>Coste piscina (€)</label><input type="number" name="pool_eur" step="any" value="{{ form.pool_eur if form else 22000 }}"></div>
       <div class="check"><input type="checkbox" id="og" name="off_grid" {{ 'checked' if form and form.off_grid }}><label for="og">Sin red eléctrica (solar)</label></div>
-      <div><label>Imprevistos</label><input type="number" name="contingency_rate" step="0.01" min="0" max="0.5" value="{{ form.contingency_rate if form else 0.10 }}"></div>
+      <div><label>Imprevistos</label><input type="number" name="contingency_rate" step="any" min="0" max="0.5" value="{{ form.contingency_rate if form else 0.10 }}"></div>
     </div>
 
     <h3 style="margin-top:22px">Implantación</h3>
     <div class="filters">
-      <div><label>Retranqueo frontal (m)</label><input type="number" name="setback_front_m" step="0.5" value="{{ form.setback_front_m if form else 5 }}"></div>
-      <div><label>Retranqueo lateral (m)</label><input type="number" name="setback_sides_m" step="0.5" value="{{ form.setback_sides_m if form else 3 }}"></div>
-      <div><label>Ocupación máxima</label><input type="number" name="max_occupancy_rate" step="0.05" min="0.05" max="1" value="{{ form.max_occupancy_rate if form else 0.30 }}"></div>
+      <div><label>Retranqueo frontal (m)</label><input type="number" name="setback_front_m" step="any" value="{{ form.setback_front_m if form else 5 }}"></div>
+      <div><label>Retranqueo lateral (m)</label><input type="number" name="setback_sides_m" step="any" value="{{ form.setback_sides_m if form else 3 }}"></div>
+      <div><label>Ocupación máxima</label><input type="number" name="max_occupancy_rate" step="any" min="0.05" max="1" value="{{ form.max_occupancy_rate if form else 0.30 }}"></div>
       <div class="check"><input type="checkbox" id="ter" name="include_terrace" {{ 'checked' if not form or form.include_terrace }}><label for="ter">Terraza</label></div>
       <div class="check"><input type="checkbox" id="park" name="include_parking" {{ 'checked' if not form or form.include_parking }}><label for="park">Aparcamiento</label></div>
     </div>
 
     <h3 style="margin-top:22px">Explotación turística <span class="note">(en blanco = datos reales de la zona)</span></h3>
     <div class="filters">
-      <div><label>Tarifa por noche (€)</label><input type="number" name="adr_eur" step="5" value="{{ form.adr_eur if form else '' }}" placeholder="según zona"></div>
-      <div><label>Ocupación anual</label><input type="number" name="occupancy_rate" step="0.01" min="0.01" max="1" value="{{ form.occupancy_rate if form else '' }}" placeholder="según zona"></div>
-      <div><label>Comisión de gestión</label><input type="number" name="management_fee" step="0.01" min="0" max="0.6" value="{{ form.management_fee if form else 0.18 }}"></div>
-      <div><label>Préstamo (€)</label><input type="number" name="loan_amount_eur" step="1000" value="{{ form.loan_amount_eur if form else 0 }}"></div>
-      <div><label>Interés</label><input type="number" name="loan_rate" step="0.001" value="{{ form.loan_rate if form else 0.045 }}"></div>
+      <div><label>Tarifa por noche (€)</label><input type="number" name="adr_eur" step="any" value="{{ form.adr_eur if form else '' }}" placeholder="según zona"></div>
+      <div><label>Ocupación anual</label><input type="number" name="occupancy_rate" step="any" min="0.01" max="1" value="{{ form.occupancy_rate if form else '' }}" placeholder="según zona"></div>
+      <div><label>Comisión de gestión</label><input type="number" name="management_fee" step="any" min="0" max="0.6" value="{{ form.management_fee if form else 0.18 }}"></div>
+      <div><label>Préstamo (€)</label><input type="number" name="loan_amount_eur" step="any" value="{{ form.loan_amount_eur if form else 0 }}"></div>
+      <div><label>Interés</label><input type="number" name="loan_rate" step="any" value="{{ form.loan_rate if form else 0.045 }}"></div>
       <div><label>Plazo (años)</label><input type="number" name="loan_years" value="{{ form.loan_years if form else 15 }}"></div>
     </div>
 

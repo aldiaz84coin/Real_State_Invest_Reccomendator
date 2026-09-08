@@ -18,10 +18,10 @@
         {% for p in provinces %}<option value="{{ p }}" {{ 'selected' if filters.province == p }}>{{ p }}</option>{% endfor %}
       </select>
     </div>
-    <div><label>Superficie mínima (m²)</label><input type="number" name="min_area_m2" value="{{ filters.min_area_m2 or 300 }}" min="0" step="50"></div>
-    <div><label>Precio máximo (€)</label><input type="number" name="max_price_eur" value="{{ filters.max_price_eur or '' }}" min="0" step="5000"></div>
-    <div><label>Descuento mínimo (%)</label><input type="number" name="min_discount_pct" value="{{ filters.min_discount_pct }}" min="0" max="95" step="5"></div>
-    <div><label>Playa a menos de (km)</label><input type="number" name="max_beach_km" value="{{ filters.max_beach_km or '' }}" min="0" step="1"></div>
+    <div><label>Superficie mínima (m²)</label><input type="number" name="min_area_m2" value="{{ filters.min_area_m2 or 300 }}" min="0" step="any"></div>
+    <div><label>Precio máximo (€)</label><input type="number" name="max_price_eur" value="{{ filters.max_price_eur or '' }}" min="0" step="any"></div>
+    <div><label>Descuento mínimo (%)</label><input type="number" name="min_discount_pct" value="{{ filters.min_discount_pct }}" min="0" max="95" step="any"></div>
+    <div><label>Playa a menos de (km)</label><input type="number" name="max_beach_km" value="{{ filters.max_beach_km or '' }}" min="0" step="any"></div>
     <div class="check">
       <input type="checkbox" id="rt" name="require_rising_trend" value="true" {{ 'checked' if filters.require_rising_trend }}>
       <label for="rt">Sólo suelo al alza</label>
@@ -50,15 +50,15 @@
       </select>
     </div>
     <div><label>Municipio (opcional)</label><input name="q" value="{{ filters.q or '' }}" placeholder="Noja"></div>
-    <div><label>Latitud</label><input name="lat" value="{{ discovery.center.lat if discovery and discovery.center.lat else '' }}" placeholder="43.4869"></div>
-    <div><label>Longitud</label><input name="lon" value="{{ discovery.center.lon if discovery and discovery.center.lon else '' }}" placeholder="-3.5290"></div>
-    <div><label>Radio (km)</label><input type="number" name="radius_km" value="{{ discovery.radius_km if discovery else 25 }}" min="1" step="5"></div>
-    <div><label>Superficie mínima (m²)</label><input type="number" name="min_area_m2" value="{{ filters.min_area_m2 or '' }}" min="0" step="50"></div>
-    <div><label>Superficie máxima (m²)</label><input type="number" name="max_area_m2" value="" min="0" step="100"></div>
-    <div><label>Precio máximo (€)</label><input type="number" name="max_price_eur" value="{{ filters.max_price_eur or '' }}" min="0" step="5000"></div>
+    <div class="por-punto"><label>Latitud</label><input name="lat" value="{{ discovery.center.lat if discovery and discovery.center.lat else '' }}" placeholder="43.4869"></div>
+    <div class="por-punto"><label>Longitud</label><input name="lon" value="{{ discovery.center.lon if discovery and discovery.center.lon else '' }}" placeholder="-3.5290"></div>
+    <div class="por-punto"><label>Radio (km)</label><input type="number" name="radius_km" value="{{ discovery.radius_km if discovery else 25 }}" min="1" step="any"></div>
+    <div><label>Superficie mínima (m²)</label><input type="number" name="min_area_m2" value="{{ filters.min_area_m2 or '' }}" min="0" step="any"></div>
+    <div><label>Superficie máxima (m²)</label><input type="number" name="max_area_m2" value="" min="0" step="any"></div>
+    <div><label>Precio máximo (€)</label><input type="number" name="max_price_eur" value="{{ filters.max_price_eur or '' }}" min="0" step="any"></div>
     <div><button type="submit">Buscar en las fuentes</button></div>
   </form>
-  <p class="note" style="margin-top:8px">
+  <p class="note" style="margin-top:8px" id="nota-alcance">
     Sin provincia la búsqueda es nacional. El radio sólo lo usan los portales,
     que buscan alrededor de un punto; las Subastas del BOE filtran por
     provincia y lo ignoran. Abajo, en «Qué contestó cada fuente», se ve qué ha
@@ -248,6 +248,23 @@
 {% block scripts %}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
+  // El punto y el radio sólo tienen sentido buscando alrededor de un sitio:
+  // en una búsqueda nacional sobraban y confundían.
+  (function () {
+    const provincia = document.querySelector('form[action="/buscar/descubrir"] select[name="province"]');
+    const municipio = document.querySelector('form[action="/buscar/descubrir"] input[name="q"]');
+    const porPunto = document.querySelectorAll('.por-punto');
+    if (!provincia) return;
+
+    function ajustar() {
+      const nacional = !provincia.value && !(municipio && municipio.value.trim());
+      porPunto.forEach(function (campo) { campo.hidden = nacional; });
+    }
+    provincia.addEventListener('change', ajustar);
+    if (municipio) municipio.addEventListener('input', ajustar);
+    ajustar();
+  })();
+
   function marcarTodas(origen) {
     document.querySelectorAll('input[name="candidato"]:not([disabled])')
       .forEach(c => { c.checked = origen.checked; });

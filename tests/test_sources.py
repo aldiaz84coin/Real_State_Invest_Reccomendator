@@ -1471,17 +1471,24 @@ class TestSubastasBoe:
         """La forma exacta de la búsqueda del portal no está documentada, así
         que se prueban varias en vez de fijar una sola y darla por buena."""
         estrategias = self._source()().search_strategies("Cantabria", 40)
-        nombres = [n for n, _ in estrategias]
+        nombres = [n for n, _, _ in estrategias]
         assert len(nombres) >= 4
-        assert nombres[-1] == "sin-filtros"      # la última sirve de sonda
+        assert any("sin-filtros" in n for n in nombres)   # sonda del portal
+
+    def test_el_listado_se_pide_a_su_propia_ruta(self):
+        """El formulario devolvía HTTP 200 y cero subastas: no es el listado."""
+        estrategias = self._source()().search_strategies("Cantabria", 40)
+        rutas = [ruta for _, ruta, _ in estrategias]
+        assert rutas[0] == "consultas_subastas_ava.php"
+        assert "subastas_ava.php" in rutas      # se conserva como respaldo
 
     def test_la_provincia_entra_en_los_filtros(self):
-        estrategias = dict(self._source()().search_strategies("Cantabria", 40))
-        assert "39" in estrategias["avanzada"].values()
+        params = {n: p for n, _, p in self._source()().search_strategies("Cantabria", 40)}
+        assert "39" in params["listado"].values()
 
     def test_sin_provincia_no_se_filtra_por_ella(self):
-        estrategias = dict(self._source()().search_strategies(None, 40))
-        assert "BIEN.PROVINCIA" not in estrategias["avanzada"].values()
+        params = {n: p for n, _, p in self._source()().search_strategies(None, 40)}
+        assert "BIEN.PROVINCIA" not in params["listado"].values()
 
     def test_se_queda_con_la_primera_estrategia_que_devuelve_algo(self, monkeypatch):
         from app.sources.boe import BoeSubastasSource
@@ -1711,3 +1718,26 @@ class TestEstimacionTuristicaPorIntensidad:
 
         ciudad = self._municipio(1000, 300, 500000)
         assert _rental_from_ine(ciudad) is None
+
+
+class TestFormularioDelBoe:
+    """Los parámetros del portal no están documentados: se leen del HTML."""
+
+    def test_saca_los_codigos_que_admite_cada_campo(self):
+        from app.sources.boe import _FormParser
+
+        parser = _FormParser()
+        parser.feed(
+            '<form><select name="dato[2]">'
+            '<option value="">Todas</option>'
+            '<option value="39">CANTABRIA</option>'
+            '<option value="45">TOLEDO</option>'
+            "</select>"
+            '<input type="hidden" name="accion" value="Buscar">'
+            '<input type="submit" name="enviar"></form>'
+        )
+        assert [o["value"] for o in parser.fields["dato[2]"]] == ["", "39", "45"]
+        assert parser.fields["dato[2]"][1]["label"] == "CANTABRIA"
+        assert "accion" in parser.fields
+        # El botón de enviar no es un parámetro de búsqueda.
+        assert "enviar" not in parser.fields
