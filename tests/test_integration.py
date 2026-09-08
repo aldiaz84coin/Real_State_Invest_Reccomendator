@@ -135,6 +135,30 @@ class TestSimulacionCompleta:
         assert respuesta.status_code in (404, 422, 500)
 
 
+class TestPlanosEnLaPagina:
+    """Los planos desaparecieron de la ficha al ocultarlos cuando no cabía."""
+
+    IMPOSIBLE = {**TestSimulacionCompleta.BASE, "parcel_area_m2": 90,
+                 "model_id": "modular-90"}
+
+    def test_los_planos_salen_en_la_simulacion_normal(self, client):
+        html = client.post("/simular", data=TestSimulacionCompleta.BASE).text
+        assert 'id="view2d"' in html and 'id="view3d"' in html
+        assert "Plano 2D" in html and "Vista 3D" in html
+
+    def test_tambien_salen_cuando_la_casa_no_cabe(self, client):
+        """La parcela y el área edificable son justo lo que explica el porqué."""
+        html = client.post("/simular", data=self.IMPOSIBLE).text
+        assert "no cabe en esta parcela" in html
+        assert 'id="view2d"' in html and 'id="view3d"' in html
+        assert "<svg" in html
+
+    def test_la_ficha_explica_donde_se_coloca_la_casa(self, client):
+        html = client.post("/simular", data=TestSimulacionCompleta.BASE).text
+        assert "Por qué la casa va justo ahí" in html
+        assert "Fachada larga al sur" in html
+
+
 class TestPaginas:
     """Toda pantalla navegable responde."""
 
@@ -308,6 +332,12 @@ class FuenteFalsa:
          "municipality": "Noja", "province": "Cantabria"},
     ]
 
+    radius_note = "No usa radio: filtra por provincia."
+
+    def search_attempts(self, province=None, max_results=40):
+        ids = [lote["id_sub"] for lote in self.LOTES]
+        return [("avanzada", ids, {"http_status": 200, "bytes": 4096})]
+
     def search(self, province=None, *, only_land=True, max_results=40):
         return [lote["id_sub"] for lote in self.LOTES]
 
@@ -436,10 +466,17 @@ class TestDescubrimiento:
 class TestDescubrimientoWeb:
     """El camino que recorre el usuario desde el buscador."""
 
-    def test_sin_zona_avisa_en_lugar_de_fallar(self, client):
+    def test_sin_provincia_la_busqueda_es_nacional(self, client, fuentes_simuladas):
+        """Las Subastas del BOE buscan en toda España; exigir provincia sobraba."""
         respuesta = client.post("/buscar/descubrir", data={"q": "", "province": ""})
         assert respuesta.status_code == 200
-        assert "las fuentes necesitan saber dónde buscar" in respuesta.text
+        assert "toda España" in respuesta.text
+        assert 'name="candidato"' in respuesta.text
+
+    def test_dice_que_los_portales_necesitan_un_punto(self, client, fuentes_simuladas):
+        """Sin coordenadas la tabla se quedaba a medias sin explicar por qué."""
+        respuesta = client.post("/buscar/descubrir", data={"province": "Cantabria"})
+        assert "Busca por coordenadas" in respuesta.text
 
     def test_lista_las_candidatas_con_su_casilla(self, client, fuentes_simuladas):
         respuesta = client.post("/buscar/descubrir", data={"province": "Cantabria"})

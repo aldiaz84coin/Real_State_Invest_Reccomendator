@@ -50,14 +50,19 @@ def discover(
     max_price_eur: float | None = None,
     max_results: int = 40,
 ) -> dict[str, Any]:
-    """Consulta las fuentes y devuelve candidatas sin guardarlas."""
+    """Consulta las fuentes y devuelve candidatas sin guardarlas.
+
+    Sin provincia ni coordenadas la búsqueda es nacional: las Subastas del BOE
+    admiten buscar en toda España, y limitarlo artificialmente dejaba fuera la
+    única fuente que de verdad responde.
+    """
     candidates: list[dict[str, Any]] = []
     attempts: list[dict[str, Any]] = []
 
     # Las Subastas del BOE van primero: es la única gratuita y sin clave, y
-    # sus lotes son justo el perfil que busca la aplicación.
-    if province or lat is not None:
-        attempts.append(_from_boe(province, lat, lon, max_results, candidates))
+    # sus lotes son justo el perfil que busca la aplicación. Filtran por
+    # provincia, no por radio, así que se consultan siempre.
+    attempts.append(_from_boe(province, lat, lon, max_results, candidates))
 
     if lat is not None and lon is not None:
         for source in [IdealistaSource(), *iter_rapidapi_sources()]:
@@ -67,6 +72,14 @@ def discover(
                     min_area_m2, max_area_m2, max_price_eur, candidates,
                 )
             )
+    else:
+        # Decirlo es mejor que dejar la tabla a medias sin explicación.
+        for source in [IdealistaSource(), *iter_rapidapi_sources()]:
+            attempts.append({
+                "source": source.key, "name": source.name,
+                "radius_note": getattr(source, "radius_note", ""),
+                "skipped": "Busca por coordenadas: indica un punto y un radio.",
+            })
 
     for candidate in candidates:
         candidate["token"] = _token(candidate)
@@ -111,12 +124,34 @@ def _from_boe(
     max_results: int, out: list[dict[str, Any]],
 ) -> dict[str, Any]:
     source = BoeSubastasSource()
-    info: dict[str, Any] = {"source": source.key, "name": source.name}
+    info: dict[str, Any] = {
+        "source": source.key,
+        "name": source.name,
+        "radius_note": getattr(source, "radius_note", ""),
+        "scope": f"provincia {province}" if province else "toda España",
+    }
     try:
-        identifiers = source.search(province, max_results=min(max_results, 25))
+        # Se piden los intentos y no search() para poder decir cual de las
+        # estrategias respondio: cuando el portal no devuelve nada, saberlo es
+        # la diferencia entre depurar y adivinar.
+        intentos = source.search_attempts(province, min(max_results, 25))
     except SourceError as exc:
         info["error"] = str(exc)[:250]
         return info
+
+    info["strategies"] = [
+        {"name": nombre, "ids": len(ids),
+         "http_status": detalle.get("http_status"),
+         "bytes": detalle.get("bytes"),
+         "error": detalle.get("error")}
+        for nombre, ids, detalle in intentos
+    ]
+    identifiers: list[str] = []
+    for _, ids, _ in intentos:
+        if ids:
+            identifiers = ids[:max_results]
+            break
+    info["auctions_found"] = len(identifiers)
 
     found = 0
     for identifier in identifiers:

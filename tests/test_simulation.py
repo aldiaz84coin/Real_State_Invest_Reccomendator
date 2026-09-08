@@ -471,3 +471,82 @@ class TestPresets:
 
         for preset in PRESETS:
             assert preset.ccaa in ITP_BY_CCAA, preset.id
+
+
+class TestOrientacionDeLaImplantacion:
+    """La casa no se coloca en el centro y ya está: hay criterios, y se explican."""
+
+    def test_la_fachada_larga_busca_el_sur(self):
+        """En una parcela holgada nada impide la orientación con más sol."""
+        plan = build_site_plan(
+            parcel_ring_lonlat=synthetic_parcel(2000, 43.4869, -3.5290),
+            model="plegable-40-2dorm",
+        )
+        assert plan.feasible
+        # Giro 0 = lado largo este-oeste = fachada larga mirando al sur.
+        desviacion = min(plan.placement["angle_deg"] % 180,
+                         180 - plan.placement["angle_deg"] % 180)
+        assert desviacion <= 15
+        assert plan.placement["criteria"]["soleamiento"] > 0.9
+
+    def test_la_casa_se_va_al_norte_para_dejar_el_jardin_al_sur(self):
+        plan = build_site_plan(
+            parcel_ring_lonlat=synthetic_parcel(2000, 43.4869, -3.5290),
+            model="plegable-40-2dorm",
+        )
+        assert plan.placement["criteria"]["jardin_al_sur"] > 0.5
+
+    def test_el_retranqueo_frontal_solo_afecta_al_lindero_de_acceso(self):
+        """Aplicar el frontal a todo el perímetro dejaba parcelas sin edificable."""
+        ring = synthetic_parcel(600, 43.4869, -3.5290)
+        plan = build_site_plan(
+            parcel_ring_lonlat=ring, model="plegable-40-2dorm",
+            options=SitePlanOptions(setback_front_m=8, setback_sides_m=3),
+        )
+        uniforme = build_site_plan(
+            parcel_ring_lonlat=ring, model="plegable-40-2dorm",
+            options=SitePlanOptions(setback_front_m=8, setback_sides_m=8),
+        )
+        assert plan.metrics["buildable_area_m2"] > uniforme.metrics["buildable_area_m2"]
+
+    def test_la_colocacion_viene_explicada(self):
+        plan = build_site_plan(
+            parcel_ring_lonlat=synthetic_parcel(1500, 43.4869, -3.5290),
+            model="plegable-40-2dorm",
+        )
+        razones = plan.placement["reasons"]
+        assert razones and all(isinstance(r, str) and len(r) > 20 for r in razones)
+        # Los pesos acompañan a los criterios: si no, el porcentaje no dice nada.
+        assert set(plan.placement["criteria"]) == set(plan.placement["weights"])
+
+    def test_las_vistas_giran_la_casa_cuando_no_manda_el_sol(self):
+        """El sol pesa el doble que las vistas, así que sólo se nota sin él."""
+        ring = synthetic_parcel(2500, 43.4869, -3.5290)
+        al_este = build_site_plan(
+            parcel_ring_lonlat=ring, model="plegable-40-2dorm",
+            options=SitePlanOptions(orient_to_south=False, view_azimuth_deg=90.0),
+        )
+        assert al_este.placement["criteria"]["vistas"] > 0.9
+        # Fachada mirando al este: el rectángulo gira noventa grados.
+        assert 80 <= al_este.placement["angle_deg"] <= 100
+
+    def test_el_sol_manda_sobre_las_vistas(self):
+        """Una vista al norte no debe justificar una casa sin sol."""
+        plan = build_site_plan(
+            parcel_ring_lonlat=synthetic_parcel(2500, 43.4869, -3.5290),
+            model="plegable-40-2dorm",
+            options=SitePlanOptions(view_azimuth_deg=0.0),
+        )
+        assert plan.placement["criteria"]["soleamiento"] > 0.9
+
+    def test_el_plano_se_dibuja_aunque_la_casa_no_quepa(self):
+        """Ocultarlo dejaba al usuario sin ver por qué no cabía."""
+        from app.simulation.render2d import render_site_plan_svg
+
+        plan = build_site_plan(
+            parcel_ring_lonlat=synthetic_parcel(150, 43.4869, -3.5290),
+            model="modular-90",
+        )
+        assert not plan.feasible
+        svg = render_site_plan_svg(plan.as_dict())
+        assert svg.startswith("<svg") and len(svg) > 500

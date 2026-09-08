@@ -338,6 +338,7 @@ class RapidApiIdealistaSource(RapidApiSource):
     name = "Idealista vía RapidAPI (respaldo no oficial)"
     portal = "Idealista"
     host = "idealista-api1.p.rapidapi.com"
+    radius_note = "Radio en metros alrededor del punto."
     search_paths = ("/properties/list", "/properties/search", "/property/search", "/search")
     docs_url = "https://rapidapi.com/oneapiproject/api/idealista-api1"
 
@@ -375,6 +376,10 @@ class RapidApiFotocasaSource(RapidApiSource):
 
     key = "rapidapi_fotocasa"
     name = "Fotocasa vía RapidAPI (respaldo no oficial)"
+    radius_note = (
+        "No admite radio: busca por municipio. El punto se traduce al "
+        "municipio más cercano dentro de 30 km, y el radio se ignora."
+    )
     portal = "Fotocasa"
     host = "fotocasa3.p.rapidapi.com"
     search_paths = ("/searchads",)
@@ -515,6 +520,7 @@ class RapidApiIdealista17Source(RapidApiSource):
     host = "idealista17.p.rapidapi.com"
     # Rutas reales de su documentacion, de la mas especifica a la mas general.
     search_paths = ("/property-search-by-coordinates", "/property-search")
+    radius_note = "Radio en metros alrededor del punto."
     docs_url = "https://rapidapi.com/happyendpoint/api/idealista17"
     licence = (
         "No oficial. Servicio independiente sin relación con Idealista; "

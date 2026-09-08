@@ -21,6 +21,7 @@ MAX_ITEMS_PER_PAGE = 50
 class IdealistaSource(BaseSource):
     key = "idealista"
     name = "Idealista (API oficial)"
+    radius_note = "Radio en metros alrededor del punto; se envía tal cual."
     kind = "listings"
     required = False
     docs_url = "https://developers.idealista.com/access-request"

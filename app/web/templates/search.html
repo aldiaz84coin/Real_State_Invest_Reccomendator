@@ -42,22 +42,28 @@
     <input type="hidden" name="min_discount_pct" value="{{ filters.min_discount_pct }}">
     {% if filters.require_rising_trend %}<input type="hidden" name="require_rising_trend" value="true">{% endif %}
     {% if filters.max_beach_km %}<input type="hidden" name="max_beach_km" value="{{ filters.max_beach_km }}">{% endif %}
-    <div><label>Municipio</label><input name="q" value="{{ filters.q or '' }}" placeholder="Noja"></div>
     <div>
       <label>Provincia</label>
       <select name="province">
-        <option value="">Todas</option>
+        <option value="">Toda España</option>
         {% for p in provinces %}<option value="{{ p }}" {{ 'selected' if filters.province == p }}>{{ p }}</option>{% endfor %}
       </select>
     </div>
+    <div><label>Municipio (opcional)</label><input name="q" value="{{ filters.q or '' }}" placeholder="Noja"></div>
     <div><label>Latitud</label><input name="lat" value="{{ discovery.center.lat if discovery and discovery.center.lat else '' }}" placeholder="43.4869"></div>
     <div><label>Longitud</label><input name="lon" value="{{ discovery.center.lon if discovery and discovery.center.lon else '' }}" placeholder="-3.5290"></div>
-    <div><label>Radio (km)</label><input type="number" name="radius_km" value="25" min="1" max="100" step="5"></div>
+    <div><label>Radio (km)</label><input type="number" name="radius_km" value="{{ discovery.radius_km if discovery else 25 }}" min="1" step="5"></div>
     <div><label>Superficie mínima (m²)</label><input type="number" name="min_area_m2" value="{{ filters.min_area_m2 or '' }}" min="0" step="50"></div>
     <div><label>Superficie máxima (m²)</label><input type="number" name="max_area_m2" value="" min="0" step="100"></div>
     <div><label>Precio máximo (€)</label><input type="number" name="max_price_eur" value="{{ filters.max_price_eur or '' }}" min="0" step="5000"></div>
     <div><button type="submit">Buscar en las fuentes</button></div>
   </form>
+  <p class="note" style="margin-top:8px">
+    Sin provincia la búsqueda es nacional. El radio sólo lo usan los portales,
+    que buscan alrededor de un punto; las Subastas del BOE filtran por
+    provincia y lo ignoran. Abajo, en «Qué contestó cada fuente», se ve qué ha
+    hecho cada una con lo que has puesto.
+  </p>
 
   {% if discovery_error %}
   <div class="alert warn" style="margin-top:12px">{{ discovery_error }}</div>
@@ -131,16 +137,29 @@
     </div>
     {% endif %}
 
-    <details style="margin-top:12px">
+    <details style="margin-top:12px" {{ 'open' if not discovery.candidates }}>
       <summary class="note">Qué contestó cada fuente</summary>
       <table style="margin-top:8px">
-        <thead><tr><th>Fuente</th><th class="num">Encontradas</th><th>Detalle</th></tr></thead>
+        <thead><tr><th>Fuente</th><th class="num">Encontradas</th><th>Qué ha hecho</th></tr></thead>
         <tbody>
         {% for a in discovery.attempts %}
           <tr>
-            <td>{{ a.name }}</td>
+            <td>{{ a.name }}{% if a.scope %}<br><span class="note">{{ a.scope }}</span>{% endif %}</td>
             <td class="num">{{ a.found if a.found is defined else '—' }}</td>
-            <td class="note">{{ a.error or 'correcto' }}</td>
+            <td class="note">
+              {%- if a.error %}<span class="badge bad">error</span> {{ a.error }}
+              {%- elif a.skipped %}<span class="badge mute">no consultada</span> {{ a.skipped }}
+              {%- else %}correcto{% endif %}
+              {%- if a.radius_note %}<br>{{ a.radius_note }}{% endif %}
+              {%- if a.strategies %}
+              <br>Búsquedas probadas en el portal:
+              {% for e in a.strategies %}<code>{{ e.name }}</code> →
+                {{ e.ids }} subasta{{ '' if e.ids == 1 else 's' }}
+                {%- if e.http_status %} (HTTP {{ e.http_status }}, {{ e.bytes }} bytes){% endif %}
+                {%- if e.error %} · {{ e.error }}{% endif %}{{ '; ' if not loop.last }}
+              {% endfor %}
+              {%- endif %}
+            </td>
           </tr>
         {% endfor %}
         </tbody>
