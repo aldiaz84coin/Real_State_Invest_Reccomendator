@@ -118,6 +118,15 @@ añadiendo `&id_sub=<id>` enseña el detalle de una subasta concreta.
 
 ### Respaldo no oficial vía RapidAPI
 
+> **MCP no sustituye a esto.** El repositorio trae un `.mcp.json` con el
+> servidor de RapidAPI, pero eso añade herramientas a una sesión de Claude Code,
+> no a la aplicación: la app desplegada habla con RapidAPI por HTTP desde
+> `app/sources/rapidapi.py` y lo que necesita es `RAPIDAPI_KEY` en el entorno
+> (o `fly secrets set RAPIDAPI_KEY=...` en producción). El `.mcp.json` se
+> versiona y se comparte, así que la clave va como `${RAPIDAPI_KEY}` y nunca
+> escrita dentro.
+
+
 Además de lo anterior, la app admite proveedores de **RapidAPI** como respaldo:
 
 | Portal | Proveedor | Cubre |
