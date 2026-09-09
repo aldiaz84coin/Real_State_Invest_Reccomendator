@@ -652,8 +652,15 @@ class RapidApiIdealista17Source(RapidApiSource):
     name = "Idealista Data API vía RapidAPI (respaldo no oficial)"
     portal = "Idealista"
     host = "idealista17.p.rapidapi.com"
-    # Rutas reales de su documentacion, de la mas especifica a la mas general.
-    search_paths = ("/property-search-by-coordinates", "/property-search")
+    # Rutas de su documentacion, ordenadas por lo que entra en el plan. La
+    # busqueda por coordenadas seria la que mejor encaja con esta aplicacion,
+    # pero el plan BASIC la excluye («This endpoint is disabled for your
+    # subscription»), asi que va detras de la que si responde.
+    search_paths = (
+        "/property-search",
+        "/property-search-by-zip",
+        "/property-search-by-coordinates",
+    )
     radius_note = "Radio en metros alrededor del punto."
     docs_url = "https://rapidapi.com/happyendpoint/api/idealista17"
     licence = (
@@ -662,23 +669,37 @@ class RapidApiIdealista17Source(RapidApiSource):
     )
 
     def build_params(self, lat: float, lon: float, radius_km: float, **filters: Any) -> dict[str, Any]:
+        """Parámetros en la forma que admite este proveedor.
+
+        Iban en camelCase -`propertyType`, `operation`, `locale`, `maxItems`-,
+        que es como los nombra la API oficial de Idealista, y por eso
+        `/property-search` contestaba HTTP 400: «Invalid or missing
+        parameters». Este revendedor los usa en snake_case, como se ve en el
+        ejemplo de su propia documentación:
+
+            /smart-search?language=en&search_text=…&search_type=for_sale
+                         &country=es&property_type=homes
+
+        Las coordenadas se mandan igualmente: `/property-search-by-coordinates`
+        las necesita si algún día el plan la incluye, y sobran sin estorbar en
+        las rutas que no las miran.
+        """
         params: dict[str, Any] = {
             "country": "es",
-            "operation": "sale",
-            "propertyType": "lands",
-            "locale": "es",
+            "language": "es",
+            "search_type": "for_sale",
+            "property_type": "lands",
             "latitude": lat,
             "longitude": lon,
             "radius": int(radius_km * 1000),
             "page": filters.get("page", 1),
-            "maxItems": 40,
         }
         if filters.get("min_size_m2"):
-            params["minSize"] = int(filters["min_size_m2"])
+            params["min_size"] = int(filters["min_size_m2"])
         if filters.get("max_size_m2"):
-            params["maxSize"] = int(filters["max_size_m2"])
+            params["max_size"] = int(filters["max_size_m2"])
         if filters.get("max_price"):
-            params["maxPrice"] = int(filters["max_price"])
+            params["max_price"] = int(filters["max_price"])
         return params
 
 
