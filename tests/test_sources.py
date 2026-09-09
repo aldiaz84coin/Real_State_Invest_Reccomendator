@@ -2840,3 +2840,72 @@ class TestPeticionCrudaARapidApi:
         )
         assert respuesta.status_code == 404
         assert "rapidapi_idealista17" in respuesta.json()["detail"]
+
+
+class TestElMensajeDelCuatrocientos:
+    """Un HTTP 400 sin su texto no permite acertar con los parámetros.
+
+    Es el mismo fallo que ya se corrigió para el 401 y el 403 —descartar el
+    cuerpo, que es donde el proveedor explica el motivo— y que aquí se había
+    quedado sin corregir. Con estos revendedores es la diferencia entre leer
+    «falta la ubicación» y probar nombres a ciegas.
+    """
+
+    def _sondear(self, monkeypatch, responder):
+        import httpx
+
+        from app.config import get_settings
+        import app.sources.rapidapi as rapidapi
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "clave")
+        get_settings.cache_clear()
+        rapidapi._check_cache.clear()
+        monkeypatch.setattr(httpx.Client, "request", responder)
+        fuente = next(s for s in rapidapi.iter_rapidapi_sources()
+                      if s.key == "rapidapi_idealista17")
+        estado = fuente.check()
+        get_settings.cache_clear()
+        rapidapi._check_cache.clear()
+        return estado
+
+    def test_el_400_lleva_lo_que_dice_el_proveedor(self, monkeypatch):
+        import httpx
+
+        estado = self._sondear(monkeypatch, lambda self, m, u, **k: httpx.Response(
+            400, json={"message": "location or locationId is required"},
+            request=httpx.Request(m, u)))
+        assert "location or locationId is required" in estado.detail
+
+    def test_un_400_no_se_explica_como_host_equivocado(self, monkeypatch):
+        """Un 400 dice que la ruta SÍ existe: culpar al host era falso, y
+        además pisaba el mensaje que nombra el parámetro que falta."""
+        import httpx
+
+        estado = self._sondear(monkeypatch, lambda self, m, u, **k: httpx.Response(
+            400, json={"message": "location is required"},
+            request=httpx.Request(m, u)))
+        assert "no reconoce las rutas" not in estado.detail
+        assert estado.status_code == 400
+
+    def test_si_todo_son_404_si_se_culpa_al_host(self, monkeypatch):
+        """Ahí sí: el host contesta pero no conoce ninguna de las rutas."""
+        import httpx
+
+        estado = self._sondear(monkeypatch, lambda self, m, u, **k: httpx.Response(
+            404, text="", request=httpx.Request(m, u)))
+        assert "no reconoce las rutas" in estado.detail
+
+    def test_lee_el_mensaje_venga_en_message_o_en_error(self):
+        import httpx
+
+        from app.sources.rapidapi import _mensaje_del_proveedor
+
+        def resp(cuerpo):
+            return httpx.Response(400, text=cuerpo,
+                                  headers={"content-type": "application/json"},
+                                  request=httpx.Request("GET", "https://x"))
+
+        assert _mensaje_del_proveedor(resp('{"message":"falta algo"}')) == "falta algo"
+        assert _mensaje_del_proveedor(resp('{"error":"invalid"}')) == "invalid"
+        # Y si no es JSON, el texto crudo sirve igual.
+        assert "Bad Request" in _mensaje_del_proveedor(resp("Bad Request"))
