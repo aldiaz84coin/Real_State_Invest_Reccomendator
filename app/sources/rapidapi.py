@@ -117,13 +117,7 @@ class RapidApiSource(BaseSource):
         Se incluye además el mensaje del propio RapidAPI, que dice cuál de los
         dos es sin ambigüedad; descartarlo era lo que obligaba a adivinar.
         """
-        suyo = ""
-        try:
-            cuerpo = response.json()
-            suyo = str(cuerpo.get("message") or cuerpo.get("error") or "")[:200]
-        except Exception:
-            suyo = str(getattr(response, "text", ""))[:200]
-        suyo = re.sub(r"\s+", " ", suyo).strip()
+        suyo = _mensaje_del_proveedor(response)
         coletilla = f" RapidAPI dice: «{suyo}»." if suyo else ""
         huella = self.key_fingerprint(self.api_key)
 
@@ -257,7 +251,17 @@ class RapidApiSource(BaseSource):
                     continue
                 raise SourceError(self._explicar_rechazo(response))
             if response.status_code in (404, 400):
-                errors.append(f"{path} -> HTTP {response.status_code}")
+                # Se guarda lo que dice el proveedor, no sólo el número. Un
+                # 400 es «Invalid or missing parameters» y suele nombrar el
+                # parámetro que falta: tirarlo dejaba el panel diciendo «HTTP
+                # 400» y a nosotros probando nombres a ciegas. Es el mismo
+                # fallo que ya se corrigió para el 401 y el 403, que aquí se
+                # había quedado sin corregir.
+                errors.append(
+                    f"{path} -> HTTP {response.status_code}"
+                    + (f" ({_mensaje_del_proveedor(response)})"
+                       if _mensaje_del_proveedor(response) else "")
+                )
                 continue
             if response.status_code != 200:
                 raise SourceError(
@@ -444,10 +448,16 @@ class RapidApiSource(BaseSource):
                 estado = self._status("needs_credentials", message, 401, latency)
             elif "cuota" in message:
                 estado = self._status("error", message, 429, latency)
-            elif "ninguna ruta candidata" in message:
-                # Todas las rutas dieron 404: el host contesta pero no las
-                # conoce. _explicar lo traduce a «esto es otro proveedor».
+            elif "ninguna ruta candidata" in message and "HTTP 400" not in message:
+                # Sólo cuando TODO fueron 404: el host contesta pero no conoce
+                # las rutas, y _explicar lo traduce a «esto es otro proveedor».
                 estado = self._status("error", message, 404, latency)
+            elif "ninguna ruta candidata" in message:
+                # Con algún 400 por medio la ruta SÍ existe: lo que falla son
+                # los parámetros. Decir aquí «host equivocado» era falso, y
+                # además pisaba el mensaje del proveedor, que es lo único que
+                # dice qué parámetro falta.
+                estado = self._status("error", message, 400, latency)
             else:
                 estado = self._status("error", message, latency_ms=latency)
             self._explicar(estado, sobrescrito, por_defecto)
@@ -949,6 +959,21 @@ FUERA_DEL_PLAN = (
     "not allowed for your subscription",
     "disabled for your subscription",
 )
+
+
+def _mensaje_del_proveedor(response: Any, limite: int = 200) -> str:
+    """Lo que el proveedor dice del fallo, en una línea.
+
+    Estos revendedores explican el motivo en el cuerpo y no en el código: dos
+    de ellos usan el mismo 400 para «falta la ubicación» y para «ese tipo de
+    inmueble no existe». Sin el texto no hay forma de saber cuál es.
+    """
+    try:
+        cuerpo = response.json()
+        texto = str(cuerpo.get("message") or cuerpo.get("error") or "")
+    except Exception:
+        texto = str(getattr(response, "text", ""))
+    return re.sub(r"\s+", " ", texto).strip()[:limite]
 
 
 def _endpoint_fuera_del_plan(response: Any) -> bool:
