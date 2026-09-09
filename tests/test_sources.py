@@ -1471,24 +1471,23 @@ class TestSubastasBoe:
         """La forma exacta de la búsqueda del portal no está documentada, así
         que se prueban varias en vez de fijar una sola y darla por buena."""
         estrategias = self._source()().search_strategies("Cantabria", 40)
-        nombres = [n for n, _, _ in estrategias]
+        nombres = [n for n, _, _, _ in estrategias]
         assert len(nombres) >= 4
         assert any("sin-filtros" in n for n in nombres)   # sonda del portal
 
-    def test_el_listado_se_pide_a_su_propia_ruta(self):
-        """El formulario devolvía HTTP 200 y cero subastas: no es el listado."""
+    def test_se_prueba_tambien_por_post(self):
+        """El formulario del portal es un POST; que acepte GET no está dicho."""
         estrategias = self._source()().search_strategies("Cantabria", 40)
-        rutas = [ruta for _, ruta, _ in estrategias]
-        assert rutas[0] == "consultas_subastas_ava.php"
-        assert "subastas_ava.php" in rutas      # se conserva como respaldo
+        metodos = {metodo for _, metodo, _, _ in estrategias}
+        assert metodos == {"GET", "POST"}
 
     def test_la_provincia_entra_en_los_filtros(self):
-        params = {n: p for n, _, p in self._source()().search_strategies("Cantabria", 40)}
-        assert "39" in params["listado"].values()
+        params = {n: p for n, _, _, p in self._source()().search_strategies("Cantabria", 40)}
+        assert "39" in params["get-filtrada"].values()
 
     def test_sin_provincia_no_se_filtra_por_ella(self):
-        params = {n: p for n, _, p in self._source()().search_strategies(None, 40)}
-        assert "BIEN.PROVINCIA" not in params["listado"].values()
+        params = {n: p for n, _, _, p in self._source()().search_strategies(None, 40)}
+        assert "BIEN.PROVINCIA" not in params["get-filtrada"].values()
 
     def test_se_queda_con_la_primera_estrategia_que_devuelve_algo(self, monkeypatch):
         from app.sources.boe import BoeSubastasSource
@@ -1498,7 +1497,7 @@ class TestSubastasBoe:
 
         def fake(self, method, url, **kw):
             llamadas["n"] += 1
-            # Sólo la segunda estrategia devuelve resultados.
+            # La primera llamada es la que abre sesión; acierta la siguiente.
             cuerpo = ('<a href="detalleSubasta.php?idSub=SUB-JA-2026-1">x</a>'
                       if llamadas["n"] == 2 else "<html>sin resultados</html>")
             return httpx.Response(200, text=cuerpo, request=httpx.Request(method, url))
@@ -1520,8 +1519,10 @@ class TestSubastasBoe:
             ),
         )
         intentos = source.search_attempts("Cantabria")
-        assert len(intentos) == 5        # probó todas
-        for _, ids, info in intentos:
+        nombres = [n for n, _, _ in intentos]
+        assert nombres[0] == "sesion-inicial"   # primero se abre la sesión
+        assert len(intentos) == 5               # y después todas las estrategias
+        for nombre, ids, info in intentos[1:]:
             assert ids == []
             assert info["http_status"] == 200
             assert info["link_patterns"]["formulario"] == 1
@@ -1741,3 +1742,65 @@ class TestFormularioDelBoe:
         assert "accion" in parser.fields
         # El botón de enviar no es un parámetro de búsqueda.
         assert "enviar" not in parser.fields
+
+
+class TestSesionDelBoe:
+    """El portal entrega su cookie en el formulario y la exige al buscar."""
+
+    def test_todas_las_peticiones_comparten_cliente(self, monkeypatch):
+        """Un cliente nuevo por petición hacía llegar la búsqueda sin sesión."""
+        import httpx
+
+        from app.sources.boe import BoeSubastasSource
+
+        clientes: list[int] = []
+
+        def fake(self, method, url, **kw):
+            clientes.append(id(self))
+            return httpx.Response(200, text="<html>nada</html>",
+                                  request=httpx.Request(method, url))
+
+        monkeypatch.setattr(httpx.Client, "request", fake)
+        BoeSubastasSource().search_attempts("Cantabria")
+        assert len(clientes) == 5
+        assert len(set(clientes)) == 1      # una sola sesión para todo
+
+    def test_se_carga_el_formulario_antes_de_buscar(self, monkeypatch):
+        import httpx
+
+        from app.sources.boe import BoeSubastasSource
+
+        vistas: list[tuple[str, str]] = []
+
+        def fake(self, method, url, **kw):
+            vistas.append((method, str(url)))
+            return httpx.Response(200, text="<html>nada</html>",
+                                  request=httpx.Request(method, url))
+
+        monkeypatch.setattr(httpx.Client, "request", fake)
+        intentos = BoeSubastasSource().search_attempts("Cantabria")
+
+        # La primera es la de calentamiento, sin parámetros de búsqueda.
+        assert vistas[0][0] == "GET" and "accion" not in vistas[0][1]
+        assert intentos[0][0] == "sesion-inicial"
+        assert "cookies" in intentos[0][2]
+
+    def test_la_sesion_recuerda_la_cookie(self, monkeypatch):
+        import httpx
+
+        from app.sources.boe import BoeSubastasSource
+
+        enviadas: list[str] = []
+
+        def fake(self, method, url, **kw):
+            enviadas.append(self.cookies.get("PHPSESSID") or "")
+            respuesta = httpx.Response(200, text="<html>nada</html>",
+                                       request=httpx.Request(method, url))
+            self.cookies.set("PHPSESSID", "abc123")
+            return respuesta
+
+        monkeypatch.setattr(httpx.Client, "request", fake)
+        BoeSubastasSource().search_attempts("Cantabria")
+        # La primera va sin cookie; a partir de ahí la lleva.
+        assert enviadas[0] == ""
+        assert all(c == "abc123" for c in enviadas[1:])

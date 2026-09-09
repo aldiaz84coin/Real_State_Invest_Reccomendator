@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -93,6 +95,19 @@ class BaseSource:
             **kwargs,
         )
 
+    @contextmanager
+    def session(self, **kwargs: Any) -> Iterator[httpx.Client]:
+        """Cliente que se mantiene abierto entre peticiones.
+
+        Existe porque hay portales, como el de Subastas del BOE, que entregan
+        una cookie de sesion al pintar el formulario y exigen esa misma cookie
+        al buscar. Abriendo un cliente nuevo por peticion, que es lo normal
+        aqui, la busqueda llegaba siempre sin sesion y el portal contestaba con
+        una pagina corta sin resultados.
+        """
+        with self.client(**kwargs) as client:
+            yield client
+
     def request(
         self,
         method: str,
@@ -100,6 +115,7 @@ class BaseSource:
         *,
         attempts: int = DEFAULT_ATTEMPTS,
         backoff: float = DEFAULT_BACKOFF_SECONDS,
+        client: httpx.Client | None = None,
         **kwargs: Any,
     ) -> httpx.Response:
         """Peticion HTTP que reintenta los fallos pasajeros.
@@ -114,8 +130,11 @@ class BaseSource:
 
         for attempt in range(1, attempts + 1):
             try:
-                with self.client() as client:
+                if client is not None:
                     response = client.request(method, url, **kwargs)
+                else:
+                    with self.client() as temporal:
+                        response = temporal.request(method, url, **kwargs)
             except httpx.ProxyError as exc:
                 # Reintentar una denegación de política no sirve de nada.
                 raise SourceBlocked(

@@ -44,7 +44,7 @@ from app.sources.boe import BoeSubastasSource
 from app.sources.catastro import CatastroSource
 from app.sources.idealista import IdealistaSource
 from app.sources.images import ReferenceImageSource
-from app.sources.osm import OverpassSource
+from app.sources.osm import NominatimSource, OverpassSource
 from app.sources.rapidapi import extract_listings, iter_rapidapi_sources
 from app.sources.registry import check_all
 from app.sources.rental import InsideAirbnbSource
@@ -1276,16 +1276,18 @@ def page_search(
 
 def _discovery_center(
     db: Session, lat: float | None, lon: float | None, *names: str | None
-) -> tuple[float | None, float | None]:
-    """Punto desde el que consultar los portales.
+) -> tuple[float | None, float | None, str | None]:
+    """Punto desde el que consultar los portales, y de dónde ha salido.
 
     Las fuentes de anuncios buscan por coordenadas, pero el usuario escribe un
-    municipio. Si no da coordenadas se toman las del municipio que ya está en
-    la base; sin él sólo pueden consultarse las fuentes que filtran por
-    provincia, que es lo que hacen las Subastas del BOE.
+    municipio. Primero se mira en la base; si no está —y con la base vacía
+    nunca lo está, que es justo cuando se usa esto— se geocodifica con
+    Nominatim, que es libre y no necesita clave. Sin eso, escribir «Noja» no
+    hacía nada y no se decía por qué.
     """
     if lat is not None and lon is not None:
-        return lat, lon
+        return lat, lon, "coordenadas indicadas"
+
     for name in names:
         if not name:
             continue
@@ -1293,8 +1295,18 @@ def _discovery_center(
             select(Municipality).where(Municipality.name.ilike(name.strip()))
         ).scalars().first()
         if found:
-            return found.lat, found.lon
-    return None, None
+            return found.lat, found.lon, f"{found.name} (municipio de la base)"
+
+    for name in names:
+        if not name:
+            continue
+        try:
+            punto = NominatimSource().geocode(f"{name}, España")
+        except SourceError:
+            return None, None, None
+        if punto:
+            return punto["lat"], punto["lon"], f"{punto['display_name'][:60]} (Nominatim)"
+    return None, None, None
 
 
 def _discover_params(form: Any) -> dict[str, Any]:
@@ -1334,7 +1346,7 @@ async def page_discover(request: Request, db: Session = Depends(get_db)) -> HTML
     query = _search_query(p["q"], p["province"], p["min_area_m2"], p["max_price_eur"],
                           p["min_discount_pct"], p["max_beach_km"], p["require_rising_trend"])
 
-    lat, lon = _discovery_center(db, p["lat"], p["lon"], p["q"], p["province"])
+    lat, lon, origen = _discovery_center(db, p["lat"], p["lon"], p["q"], p["province"])
     resultado = discover(
         db, lat=lat, lon=lon, province=p["province"],
         radius_km=p["radius_km"],
@@ -1343,9 +1355,16 @@ async def page_discover(request: Request, db: Session = Depends(get_db)) -> HTML
     )
     for candidato in resultado["candidates"]:
         candidato["payload"] = serialize(candidato)
-    resultado["center"] = {"lat": lat, "lon": lon}
+    resultado["center"] = {"lat": lat, "lon": lon, "source": origen}
     resultado["radius_km"] = p["radius_km"]
-    return _render_search(request, db, query, discovery=resultado)
+    aviso = None
+    if lat is None and (p["q"] or p["province"]):
+        aviso = (
+            f"No se ha podido situar «{p['q'] or p['province']}» en el mapa, así que "
+            "sólo se han consultado las fuentes que filtran por provincia. "
+            "Escribe las coordenadas a mano si quieres consultar los portales."
+        )
+    return _render_search(request, db, query, discovery=resultado, discovery_error=aviso)
 
 
 @app.post("/buscar/importar", response_class=HTMLResponse, include_in_schema=False)

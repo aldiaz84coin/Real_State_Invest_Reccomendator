@@ -18,6 +18,9 @@ from typing import Any
 from app.provinces import code_for
 from app.sources.base import BaseSource, SourceError, SourceStatus
 
+# Ruta del buscador. consultas_subastas_ava.php devolvia 404: no existe.
+SEARCH_PATH = "subastas_ava.php"
+
 # Etiquetas del detalle de subasta que interesan, normalizadas sin acentos.
 FIELD_LABELS = {
     "valor subasta": "auction_value",
@@ -124,17 +127,17 @@ class BoeSubastasSource(BaseSource):
 
     def search_strategies(
         self, province: str | None, max_results: int
-    ) -> list[tuple[str, str, dict[str, Any]]]:
-        """Rutas y parametros a probar, del mas especifico al mas simple.
+    ) -> list[tuple[str, str, str, dict[str, Any]]]:
+        """Metodo, ruta y parametros a probar, del mas especifico al mas simple.
 
-        Cada estrategia lleva su propia ruta porque el portal separa el
-        formulario del listado: `subastas_ava.php` pinta el buscador y
-        `consultas_subastas_ava.php` devuelve los resultados. Pedirselos todos
-        al formulario daba HTTP 200 con la misma pagina de 6,5 KB, que es la
-        firma de "aqui no hay resultados, esto es el formulario".
+        La forma exacta de la busqueda de este portal no esta documentada, y lo
+        que devuelve no ayuda: contesta HTTP 200 tanto si encuentra como si no.
+        Se prueban varias combinaciones y se usa la primera que devuelva
+        subastas; la ultima va sin filtros y sirve para saber si el portal
+        responde siquiera.
         """
         code = self.province_code(province)
-        estrategias: list[tuple[str, str, dict[str, Any]]] = []
+        estrategias: list[tuple[str, str, str, dict[str, Any]]] = []
 
         base: dict[str, Any] = {
             "accion": "Buscar",
@@ -150,21 +153,18 @@ class BoeSubastasSource(BaseSource):
             base["campo[2]"] = "BIEN.PROVINCIA"
             base["dato[2]"] = code
 
-        # La ruta del listado es la que de verdad devuelve subastas.
-        estrategias.append(("listado", "consultas_subastas_ava.php", dict(base)))
+        estrategias.append(("get-filtrada", "GET", SEARCH_PATH, dict(base)))
+        # El formulario del portal es un POST; que acepte GET no esta dicho en
+        # ninguna parte, asi que se prueba tal y como lo envia el navegador.
+        estrategias.append(("post-filtrada", "POST", SEARCH_PATH, dict(base)))
         estrategias.append(
-            ("listado-simple", "consultas_subastas_ava.php",
+            ("get-solo-provincia", "GET", SEARCH_PATH,
              {"accion": "Buscar", "page_hits": 50,
               **({"campo[0]": "BIEN.PROVINCIA", "dato[0]": code} if code else {})})
         )
-        # Sin filtros: si el portal responde con subastas, el problema son los
-        # parametros y no el acceso.
-        estrategias.append(("listado-sin-filtros", "consultas_subastas_ava.php", {}))
-
-        # Y las del formulario, que es donde se buscaba antes. Se conservan por
-        # si el portal vuelve a servir resultados desde ahi.
-        estrategias.append(("formulario", "subastas_ava.php", dict(base)))
-        estrategias.append(("formulario-sin-filtros", "subastas_ava.php", {}))
+        # Sin ningun filtro: si aqui salen subastas, el problema son los
+        # parametros; si no sale ninguna, es el acceso o el parseo.
+        estrategias.append(("sin-filtros", "GET", SEARCH_PATH, {}))
         return estrategias
 
     def search(
@@ -183,39 +183,66 @@ class BoeSubastasSource(BaseSource):
     def search_attempts(
         self, province: str | None = None, max_results: int = 40
     ) -> list[tuple[str, list[str], dict[str, Any]]]:
-        """Cada estrategia probada con lo que devolvio. Lo usa el diagnostico."""
+        """Cada estrategia probada con lo que devolvio. Lo usa el diagnostico.
+
+        Todo ocurre dentro de una misma sesion HTTP, y se empieza por cargar el
+        formulario: el portal entrega ahi su cookie y la exige despues. Con un
+        cliente nuevo por peticion, la busqueda llegaba sin sesion y contestaba
+        con una pagina corta y vacia.
+        """
         resultados: list[tuple[str, list[str], dict[str, Any]]] = []
-        for nombre, ruta, params in self.search_strategies(province, max_results):
-            info: dict[str, Any] = {
-                "path": ruta,
-                "params": {k: str(v) for k, v in params.items()},
-            }
+
+        with self.session() as client:
+            calentamiento: dict[str, Any] = {}
             try:
-                response = self.request("GET", f"{self.base_url}/{ruta}", params=params)
+                inicial = self.request(
+                    "GET", f"{self.base_url}/{SEARCH_PATH}", client=client
+                )
+                calentamiento = {
+                    "http_status": inicial.status_code,
+                    "bytes": len(inicial.text),
+                    "cookies": sorted(client.cookies.keys()),
+                }
             except SourceError as exc:
-                info["error"] = str(exc)[:300]
-                resultados.append((nombre, [], info))
-                continue
+                calentamiento = {"error": str(exc)[:200]}
+            resultados.append(("sesion-inicial", [], calentamiento))
 
-            info["http_status"] = response.status_code
-            info["bytes"] = len(response.text)
-            info["final_url"] = str(response.url)
-            if response.status_code != 200:
-                resultados.append((nombre, [], info))
-                continue
+            for nombre, metodo, ruta, params in self.search_strategies(province, max_results):
+                info: dict[str, Any] = {
+                    "method": metodo,
+                    "path": ruta,
+                    "params": {k: str(v) for k, v in params.items()},
+                }
+                envio = {"data": params} if metodo == "POST" else {"params": params}
+                try:
+                    response = self.request(
+                        metodo, f"{self.base_url}/{ruta}", client=client, **envio
+                    )
+                except SourceError as exc:
+                    info["error"] = str(exc)[:300]
+                    resultados.append((nombre, [], info))
+                    continue
 
-            ids = self.parse_result_ids(response.text)
-            info["link_patterns"] = _count_patterns(response.text)
-            if not ids:
-                # Sin el cuerpo no hay forma de saber que devolvio el portal, y
-                # remitir a otro diagnostico seria dar vueltas.
-                info["body_excerpt"] = _excerpt(response.text)
-            resultados.append((nombre, ids, info))
-            if ids:
-                break
+                info["http_status"] = response.status_code
+                info["bytes"] = len(response.text)
+                info["final_url"] = str(response.url)
+                if response.status_code != 200:
+                    resultados.append((nombre, [], info))
+                    continue
+
+                ids = self.parse_result_ids(response.text)
+                info["link_patterns"] = _count_patterns(response.text)
+                if not ids:
+                    # Sin el cuerpo no hay forma de saber que devolvio el
+                    # portal, y remitir a otro diagnostico seria dar vueltas.
+                    info["body_excerpt"] = _excerpt(response.text)
+                resultados.append((nombre, ids, info))
+                if ids:
+                    break
+
         return resultados
 
-    def form_fields(self, path: str = "subastas_ava.php") -> dict[str, list[dict[str, str]]]:
+    def form_fields(self, path: str = SEARCH_PATH) -> dict[str, list[dict[str, str]]]:
         """Campos y valores que admite el formulario de busqueda del portal.
 
         Existe porque los parametros de este portal no estan documentados en
@@ -328,7 +355,7 @@ class BoeSubastasSource(BaseSource):
         }
 
     def check(self) -> SourceStatus:
-        return self._timed_probe(f"{self.base_url}/subastas_ava.php")
+        return self._timed_probe(f"{self.base_url}/{SEARCH_PATH}")
 
 
 class _FormParser(HTMLParser):
