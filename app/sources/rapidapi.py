@@ -246,7 +246,9 @@ class RapidApiSource(BaseSource):
                     # por muerta teniendo otras rutas candidatas sin probar,
                     # que es justo para lo que estan.
                     errors.append(
-                        f"{path} -> fuera del plan (HTTP {response.status_code})"
+                        f"{path} -> fuera del plan para la clave "
+                        f"{self.key_fingerprint(self.api_key)} "
+                        f"(HTTP {response.status_code})"
                     )
                     continue
                 raise SourceError(self._explicar_rechazo(response))
@@ -257,10 +259,14 @@ class RapidApiSource(BaseSource):
                 # 400» y a nosotros probando nombres a ciegas. Es el mismo
                 # fallo que ya se corrigió para el 401 y el 403, que aquí se
                 # había quedado sin corregir.
+                suyo = _mensaje_del_proveedor(response)
+                # Con los parámetros a la vista: el proveedor dice cuáles no
+                # admite, y sin saber cuáles se enviaron no se puede cruzar.
+                enviados = ", ".join(sorted(params)) if params else "ninguno"
                 errors.append(
                     f"{path} -> HTTP {response.status_code}"
-                    + (f" ({_mensaje_del_proveedor(response)})"
-                       if _mensaje_del_proveedor(response) else "")
+                    + (f" ({suyo})" if suyo else "")
+                    + f" [enviados: {enviados}]"
                 )
                 continue
             if response.status_code != 200:
