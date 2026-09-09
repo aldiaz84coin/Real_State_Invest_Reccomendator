@@ -1473,7 +1473,9 @@ class TestSubastasBoe:
         estrategias = self._source()().search_strategies("Cantabria", 40)
         nombres = [n for n, _, _, _ in estrategias]
         assert len(nombres) >= 3
-        assert nombres[-1] == "sin-filtros"        # la última sirve de sonda
+        # Las sondas sin filtro van al final: si ahí tampoco sale nada, el
+        # problema no son los parámetros sino el acceso o el parseo.
+        assert nombres[-2:] == ["sin-filtros", "listado-sin-filtros"]
 
     def test_se_prueba_tambien_por_post(self):
         """El formulario del portal es un POST; que acepte GET no está dicho."""
@@ -2045,3 +2047,273 @@ class TestSinSubastasRepetidas:
         primera = {"source": "boe_subastas", "external_id": "SUB-1", "title": "de la API"}
         segunda = {"source": "boe_subastas", "external_id": "SUB-1", "title": "del portal"}
         assert _sin_repetidas([primera, segunda])[0]["title"] == "de la API"
+
+
+class TestAnunciosDeSueloDelBoe:
+    """El caso que dejaba el descubrimiento a cero.
+
+    El sumario encontraba más de cien anuncios de subasta al día y no salía
+    ninguna candidata. No fallaba la red: el camino era
+    `sumario -> identificador SUB- -> ficha del portal`, y sólo llevan `SUB-`
+    las subastas electrónicas. El INVIED, ADIF, SEPES y los ayuntamientos
+    venden por pliego, sin ese identificador, y eran justo los que más suelo
+    sacan. Aquí se leen del propio anuncio.
+    """
+
+    # Un anuncio real del INVIED en su forma habitual: varios lotes, mezcla de
+    # suelo y vivienda, e importes que no son el precio de salida.
+    XML = """<?xml version="1.0" encoding="UTF-8"?>
+<documento>
+ <metadatos>
+  <identificador>BOE-B-2026-23129</identificador>
+  <departamento codigo="4141">MINISTERIO DE DEFENSA</departamento>
+  <seccion codigo="5">V. Anuncios</seccion>
+  <titulo>Resoluci&#243;n del INVIED por la que se anuncian subastas p&#250;blicas,
+  con proposici&#243;n econ&#243;mica al alza en sobre cerrado, de propiedades sitas
+  en varias zonas de Espa&#241;a.</titulo>
+  <fecha_publicacion>20260905</fecha_publicacion>
+ </metadatos>
+ <texto>
+  <p>Se anuncia la enajenaci&#243;n de las siguientes propiedades.</p>
+  <p>Lote n&#186; 1: Solar sito en el t&#233;rmino municipal de Le&#243;n, con una
+  superficie de 2.340 m2, referencia catastral 9872023VH5797S0001WX.
+  Tipo de licitaci&#243;n: 468.000,00 euros. Fianza: 23.400,00 euros.</p>
+  <p>Lote n&#186; 2: Vivienda sita en Madrid de 90 metros cuadrados.
+  Tipo de licitaci&#243;n: 310.000,00 euros.</p>
+  <p>Lote n&#186; 3: Parcela r&#250;stica en el t&#233;rmino municipal de Almazora,
+  provincia de Castell&#243;n, de 3,5 hect&#225;reas.
+  Tipo de licitaci&#243;n: 87.500,00 euros.</p>
+ </texto>
+</documento>"""
+
+    def _fuente(self):
+        from app.sources.boe_anuncios import BoeAnunciosSource
+
+        return BoeAnunciosSource()
+
+    def _anuncio(self):
+        return self._fuente().parse_xml(self.XML, "BOE-B-2026-23129")
+
+    def test_lee_los_metadatos_del_anuncio(self):
+        anuncio = self._anuncio()
+        assert anuncio["departamento"] == "MINISTERIO DE DEFENSA"
+        assert anuncio["seccion"] == "V. Anuncios"
+        assert "INVIED" in anuncio["titulo"]
+
+    def test_un_anuncio_sin_identificador_de_subasta_si_da_candidatas(self):
+        """Es el fallo que se corrige: no lleva SUB- y antes se perdía entero."""
+        from app.sources.boe_api import BoeSumarioSource
+
+        assert BoeSumarioSource.auction_ids(self._anuncio()["texto"]) == []
+        assert self._fuente().candidates(self._anuncio())
+
+    def test_cada_lote_es_una_candidata(self):
+        lotes = [c["raw"]["lote"] for c in self._fuente().candidates(self._anuncio())]
+        assert lotes == ["1", "3"]
+
+    def test_el_lote_de_vivienda_queda_fuera(self):
+        """Un piso no es suelo edificable: mezclarlo falsea el precio por metro."""
+        candidatas = self._fuente().candidates(self._anuncio())
+        assert not any("Vivienda" in c["description"] for c in candidatas)
+
+    def test_el_precio_es_el_tipo_de_licitacion_y_no_la_fianza(self):
+        primera = self._fuente().candidates(self._anuncio())[0]
+        assert primera["price_eur"] == 468000.0
+        assert primera["raw"]["price_label"] == "tipo de licitacion"
+
+    def test_las_hectareas_se_convierten_a_metros(self):
+        """Confundirlas cambia el precio por metro en dos órdenes de magnitud."""
+        rustica = self._fuente().candidates(self._anuncio())[1]
+        assert rustica["area_m2"] == 35_000.0
+        assert rustica["price_eur_m2"] == 2.5
+
+    def test_saca_municipio_provincia_y_referencia_catastral(self):
+        primera = self._fuente().candidates(self._anuncio())[0]
+        assert primera["municipality_name"] == "León"
+        assert primera["province"] == "León"
+        assert primera["cadastral_ref"] == "9872023VH5797S0001WX"
+
+    def test_el_identificador_externo_distingue_los_lotes(self):
+        """Sin el lote en la clave, veinticinco fincas se pisaban entre sí."""
+        externos = [c["external_id"] for c in self._fuente().candidates(self._anuncio())]
+        assert externos == ["BOE-B-2026-23129-1", "BOE-B-2026-23129-3"]
+
+    def test_sin_precio_o_sin_superficie_no_hay_candidata(self):
+        """El criterio de la app es el precio por metro: inventarlo sería peor."""
+        anuncio = {"identificador": "BOE-B-2026-1",
+                   "titulo": "Anuncio de subasta de solar",
+                   "texto": "Solar en Soria. Tipo de licitación: 40.000,00 euros."}
+        assert self._fuente().candidates(anuncio) == []
+
+
+class TestFiltrosDelAnuncio:
+    """Las reglas que deciden si un anuncio interesa, una a una."""
+
+    def test_reconoce_la_venta_aunque_no_diga_subasta(self):
+        """ADIF y SEPES enajenan por pliego: «subasta» sola los dejaba fuera."""
+        from app.sources.boe_anuncios import is_sale
+
+        assert is_sale("Anuncio de enajenación de parcelas sobrantes")
+        assert is_sale("Venta de solar del patrimonio municipal")
+        assert not is_sale("Edicto de notificación de sentencia")
+
+    def test_un_garaje_no_pasa_por_nombrar_su_parcela_catastral(self):
+        """«Parcela catastral» sale en el anuncio de cualquier inmueble."""
+        from app.sources.boe_anuncios import is_land
+
+        assert not is_land("Plaza de garaje. Referencia catastral de la parcela 1234")
+        assert is_land("Solar sin edificar de 300 m2")
+
+    def test_la_superficie_que_vale_es_la_primera_del_texto(self):
+        """Un lindero de tres hectáreas no es la finca que se vende."""
+        from app.sources.boe_anuncios import parse_area
+
+        assert parse_area("solar de 800 m2 lindante con monte de 3 hectáreas") == 800.0
+
+    def test_el_precio_no_es_la_deuda_reclamada(self):
+        """Los edictos citan la deuda y las costas antes que el tipo."""
+        from app.sources.boe_anuncios import parse_price
+
+        texto = ("Cantidad reclamada: 900.000,00 euros. "
+                 "Tipo de subasta: 125.400,00 euros.")
+        assert parse_price(texto) == (125400.0, "tipo de subasta")
+
+    def test_gana_la_provincia_que_se_nombra_antes(self):
+        """El anuncio cita la finca primero y el juzgado que la subasta después."""
+        from app.sources.boe_anuncios import parse_province
+
+        assert parse_province(
+            "Finca en Cuenca, por el Juzgado de Primera Instancia de Madrid"
+        ) == "Cuenca"
+
+    def test_sin_lotes_numerados_el_anuncio_va_entero(self):
+        """Las subastas judiciales son de una sola finca y no numeran nada."""
+        from app.sources.boe_anuncios import split_lots
+
+        assert split_lots("Solar único en Ávila de 500 m2") == [
+            ("", "Solar único en Ávila de 500 m2")
+        ]
+
+    def test_filtra_por_provincia_con_lo_que_dice_el_anuncio(self):
+        """El Boletín es nacional: no hay forma de pedirle sólo una provincia."""
+        from app.sources.boe_anuncios import BoeAnunciosSource
+
+        anuncios = [{
+            "identificador": "BOE-B-2026-7",
+            "titulo": "Anuncio de subasta de solar",
+            "texto": ("Solar sito en el término municipal de Reinosa, Cantabria, "
+                      "de 1.000 m2. Tipo de licitación: 50.000,00 euros."),
+        }]
+        fuente = BoeAnunciosSource()
+        assert fuente.from_crawl(anuncios, province="Cantabria")["candidates"]
+        fuera = fuente.from_crawl(anuncios, province="Sevilla")
+        assert fuera["candidates"] == []
+        assert fuera["discarded"]["otra_provincia"] == 1
+
+    def test_aparece_en_el_registro_de_fuentes(self):
+        from app.sources.registry import build_sources
+
+        assert "boe_anuncios" in {s.key for s in build_sources()}
+
+
+class TestPorQueNoSalenIdentificadores:
+    """«0 identificadas» no decía si fallaba la red, el filtro o no había nada."""
+
+    SUMARIO = {"item": [
+        {"identificador": "BOE-B-2026-1",
+         "titulo": "Anuncio de subasta de finca rústica",
+         "url_xml": "/diario_boe/xml.php?id=BOE-B-2026-1"},
+        {"identificador": "BOE-B-2026-2",
+         "titulo": "Anuncio de enajenación de parcela municipal",
+         "url_xml": "/diario_boe/xml.php?id=BOE-B-2026-2"},
+    ]}
+
+    def _con_respuestas(self, monkeypatch, cuerpo, status=200):
+        import httpx
+
+        def responder(self, method, url, **kw):
+            if "sumario" in str(url):
+                return httpx.Response(
+                    200,
+                    json={"data": {"sumario": TestPorQueNoSalenIdentificadores.SUMARIO}},
+                    request=httpx.Request(method, url),
+                )
+            return httpx.Response(status, text=cuerpo,
+                                  request=httpx.Request(method, url))
+
+        monkeypatch.setattr(httpx.Client, "request", responder)
+
+    def test_separa_los_fallos_de_descarga_de_los_anuncios_sin_subasta(
+        self, monkeypatch
+    ):
+        from datetime import date
+
+        from app.sources.boe_api import BoeSumarioSource
+
+        self._con_respuestas(monkeypatch, "<documento>Sin identificador.</documento>")
+        dia = BoeSumarioSource().crawl(days=1, today=date(2026, 9, 8))["days"][0]
+        assert dia["auction_announcements"] == 2
+        assert dia["downloaded"] == 2
+        assert dia["download_errors"] == 0
+        assert dia["without_auction_id"] == 2
+        assert dia["with_auction_id"] == 0
+
+    def test_un_anuncio_que_no_se_descarga_se_cuenta_como_fallo(self, monkeypatch):
+        from datetime import date
+
+        from app.sources.boe_api import BoeSumarioSource
+
+        self._con_respuestas(monkeypatch, "", status=503)
+        dia = BoeSumarioSource().crawl(days=1, today=date(2026, 9, 8))["days"][0]
+        assert dia["download_errors"] == 2
+        assert dia["downloaded"] == 0
+        assert "last_error" in dia
+
+    def test_el_recorrido_guarda_el_xml_para_no_pedirlo_dos_veces(self, monkeypatch):
+        """Dos fuentes salen del mismo paseo: pedirlo dos veces lo hacía cortar."""
+        from datetime import date
+
+        from app.sources.boe_api import BoeSumarioSource
+
+        self._con_respuestas(monkeypatch, "<documento><texto>Solar</texto></documento>")
+        recorrido = BoeSumarioSource().crawl(days=1, today=date(2026, 9, 8))
+        assert all("xml" in a for a in recorrido["announcements"])
+
+    def test_el_sumario_ve_ahora_las_enajenaciones(self):
+        """Las ventas por pliego no dicen «subasta» en el título."""
+        from app.sources.boe_api import BoeSumarioSource
+
+        anuncios = BoeSumarioSource().auction_items(self.SUMARIO)
+        assert len(anuncios) == 2
+
+
+class TestVendedoresPublicosDeSuelo:
+    """SEPES, ADIF, INVIED y Patrimonio: catalogados, no raspados."""
+
+    def test_estan_en_el_registro(self):
+        from app.sources.registry import build_sources
+
+        claves = {s.key for s in build_sources()}
+        assert {"sepes", "adif_suelos", "invied", "patrimonio_estado"} <= claves
+
+    def test_no_se_cuentan_como_fuente_de_anuncios(self):
+        """Su web responde, pero de ahí no sale ninguna oferta consultable:
+        marcarlas como «listings» haría que el panel prometiera lo que no hay."""
+        from app.sources.suelo_publico import iter_public_land_sources
+
+        assert all(s.kind == "catalog" for s in iter_public_land_sources())
+
+    def test_dicen_por_donde_se_leen_de_verdad(self, monkeypatch):
+        import httpx
+
+        from app.sources.suelo_publico import SepesSource
+
+        monkeypatch.setattr(
+            httpx.Client, "request",
+            lambda self, method, url, **kw: httpx.Response(
+                200, text="", request=httpx.Request(method, url)),
+        )
+        estado = SepesSource().check()
+        assert estado.ok
+        assert "BOE" in estado.detail
+        assert estado.extra["discovered_via"] == "boe_anuncios"

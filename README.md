@@ -25,6 +25,7 @@ Esta fue la primera comprobación del proyecto y condiciona todo lo demás.
 | **INE · viviendas turísticas** | Sí, libre | Estadística experimental: viviendas y plazas de alquiler turístico **de todos los municipios de España**, medidas rastreando las plataformas. Tablas Tempus3 39363 (municipios) y 39364 (provincias). |
 | **AirROI** | Sí, de pago | Complemento opcional de pago por uso. |
 | **AirDNA** | Descartado | Su API sólo se comercializa con contrato *enterprise* (del orden de 50.000 $/año). |
+| **SEPES, ADIF, INVIED, Patrimonio del Estado** | Sí, libre, vía BOE | Los cuatro organismos que más suelo sacan al mercado en España. No tienen API y sus webs son noticias y pliegos en PDF, pero están obligados a anunciar cada venta en el Boletín: se leen por ahí. |
 
 ### Subastas del BOE: por la API documentada, no raspando el buscador
 
@@ -32,19 +33,54 @@ El buscador de `subastas.boe.es` **no es una API**: no está documentado, sus
 parámetros hay que deducirlos leyendo el formulario, y devolvía siempre la
 misma página aunque el HTTP fuera 200. La Agencia Estatal BOE sí publica una
 [API de datos abiertos](https://www.boe.es/datosabiertos/api/api.php),
-documentada, sin clave y sin cuota, y por ahí pasa toda subasta: para
-celebrarse tiene que anunciarse antes en el Boletín.
+documentada, sin clave y sin cuota, y por ahí pasa toda venta de patrimonio
+público: para celebrarse tiene que anunciarse antes en el Boletín.
 
 - Las **judiciales** se publican en la sección IV (Administración de Justicia).
 - Las **administrativas** —Agencia Tributaria, Seguridad Social, ayuntamientos—
   en la sección V (Anuncios).
 
-`GET /datosabiertos/api/boe/sumario/AAAAMMDD` devuelve el sumario del día. De
-cada anuncio de subasta se saca el identificador (`SUB-JA-2026-…`) y con él la
-ficha estructurada del portal, que sí es una página estable: **el
-descubrimiento va por la vía documentada y sólo el detalle depende del
-portal**. El buscador del portal se conserva detrás como atajo, porque filtra
-por provincia sin recorrer boletines día a día.
+`GET /datosabiertos/api/boe/sumario/AAAAMMDD` devuelve el sumario del día, y de
+ahí salen **dos** fuentes distintas, porque no todas las ventas se celebran
+igual.
+
+### Por qué el Boletín daba cien anuncios al día y cero candidatas
+
+El descubrimiento hacía un solo camino:
+
+    sumario del BOE  →  identificador SUB-…  →  ficha del Portal de Subastas
+
+y sólo llevan identificador `SUB-` las subastas **electrónicas**: las
+judiciales, las notariales y las de la Agencia Tributaria. Los organismos que
+más suelo venden no subastan así:
+
+- el **INVIED** enajena cuarteles y solares de Defensa por «subasta pública con
+  proposición económica al alza en sobre cerrado»;
+- **ADIF** y **SEPES** venden parcelas sobrantes e industriales por pliego;
+- los **ayuntamientos** sacan solares del patrimonio municipal de suelo.
+
+Sus anuncios no tienen `SUB-`, así que el filtro los descartaba uno por uno: de
+ahí que el panel mostrara 129 anuncios de subasta y 0 identificadas. La fuente
+`boe_anuncios` los lee del **texto del propio anuncio**, que es un XML estable y
+documentado: saca el tipo de licitación (no la fianza ni la deuda reclamada), la
+superficie con sus unidades, el municipio, la provincia y la referencia
+catastral, y parte en lotes los anuncios que sacan varias fincas de golpe.
+
+```bash
+curl -X POST "https://<tu-app>.fly.dev/api/ingest/boe-anuncios?province=Cantabria"
+```
+
+`GET /api/sources/boe-anuncios/probe?identificador=BOE-B-2026-23129` enseña el
+desmenuzado de un anuncio concreto: de qué etiqueta sale el precio, qué lotes
+encuentra y por qué descarta cada uno.
+
+Las dos fuentes comparten un único recorrido de boletines: pedir dos veces los
+mismos cien anuncios diarios era lo que hacía que el BOE empezara a cortar
+peticiones a mitad de camino. El resumen de cada día distingue ahora los tres
+casos que se confundían en un mismo cero —cuántos anuncios había, cuántos no se
+pudieron descargar y cuántos se leyeron sin traer identificador de subasta—,
+porque «0 identificadas» no decía si fallaba la red, el filtro o es que ese día
+no había ninguna.
 
 ### El buscador del portal, como respaldo
 

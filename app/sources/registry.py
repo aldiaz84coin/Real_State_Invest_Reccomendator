@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import SourceCheck
 from app.sources.base import BaseSource, SourceStatus
 from app.sources.boe import BoeSubastasSource
+from app.sources.boe_anuncios import BoeAnunciosSource
 from app.sources.boe_api import BoeSumarioSource
 from app.sources.catastro import CatastroSource
 from app.sources.idealista import FotocasaSource, IdealistaSource, PisosComSource
@@ -16,6 +17,7 @@ from app.sources.osm import NominatimSource, OverpassSource
 from app.sources.prices import IneSource, MivauLandPriceSource
 from app.sources.rapidapi import iter_rapidapi_sources
 from app.sources.rental import AirDnaSource, AirRoiSource, InsideAirbnbSource
+from app.sources.suelo_publico import iter_public_land_sources
 from app.sources.tourism import IneTourismSource
 
 
@@ -30,6 +32,7 @@ def build_sources() -> list[BaseSource]:
         FotocasaSource(),
         PisosComSource(),
         BoeSumarioSource(),
+        BoeAnunciosSource(),
         BoeSubastasSource(),
         *iter_rapidapi_sources(),
         CatastroSource(),
@@ -41,6 +44,7 @@ def build_sources() -> list[BaseSource]:
         IneTourismSource(),
         AirRoiSource(),
         AirDnaSource(),
+        *iter_public_land_sources(),
     ]
 
 
@@ -83,7 +87,10 @@ def check_all(db: Session | None = None, timeout: float = 45.0) -> dict[str, Any
 
     required_ok = all(s.ok for s in statuses if s.required)
     has_listings = any(s.ok for s in statuses if s.kind == "listings")
-    official_listings = any(s.ok for s in statuses if s.key in ("idealista", "boe_subastas"))
+    official_listings = any(
+        s.ok for s in statuses
+        if s.key in ("idealista", "boe_subastas", "boe_sumario", "boe_anuncios")
+    )
     fallback_listings = any(s.ok for s in statuses if s.key.startswith("rapidapi_"))
 
     return {
@@ -101,9 +108,11 @@ def check_all(db: Session | None = None, timeout: float = 45.0) -> dict[str, Any
             "operational": required_ok,
             "note": (
                 "Las fuentes obligatorias (Catastro, INE, OSM) son abiertas y no "
-                "necesitan clave. Las Subastas del BOE aportan ofertas activas de "
-                "inmuebles en toda Espana sin clave ni coste; Idealista anade el "
-                "mercado libre y requiere clave propia."
+                "necesitan clave. Del BOE salen las ofertas activas de toda "
+                "España sin clave ni coste: el Portal de Subastas para las "
+                "electrónicas, y los anuncios del Boletín para el suelo que "
+                "SEPES, ADIF, el INVIED y los ayuntamientos venden por pliego. "
+                "Idealista añade el mercado libre y requiere clave propia."
             ),
         },
     }

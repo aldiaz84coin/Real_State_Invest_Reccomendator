@@ -160,9 +160,25 @@
               {% for d in a.days %}<code>{{ d.date }}</code>
                 {%- if d.error %} · {{ d.error }}
                 {%- elif not d.published %} · sin boletín
-                {%- else %} · {{ d.auction_announcements }} anuncios de subasta,
-                  {{ d.auction_ids }} identificadas{% endif %}{{ '; ' if not loop.last }}
+                {%- else %} · {{ d.auction_announcements }} anuncios de venta
+                  {#- Se desglosa porque «0 identificadas» no distinguía un
+                      fallo de red de un anuncio que sencillamente no se
+                      celebra en el Portal de Subastas. -#}
+                  {%- if d.downloaded is defined %}, {{ d.downloaded }} leídos{% endif %}
+                  {%- if d.download_errors %}, {{ d.download_errors }} no se pudieron descargar{% endif %}
+                  {%- if d.with_auction_id is defined %}, {{ d.with_auction_id }} con subasta electrónica
+                    {#- Sin identificador SUB- no hay ficha en el portal: ese
+                        suelo lo recoge la fuente de anuncios. -#}
+                    {%- if d.without_auction_id %} y {{ d.without_auction_id }} por pliego{% endif %}
+                  {%- endif %}{% endif %}{{ '; ' if not loop.last }}
               {% endfor %}
+              {%- endif %}
+              {%- if a.announcements_read is defined %}
+              <br>{{ a.announcements_read }} anuncios leídos del Boletín.
+              {%- endif %}
+              {%- if a.discarded %}
+              <br><span class="note">descartados:
+                {% for k, v in a.discarded.items() %}{{ k|replace('_', ' ') }} {{ v }}{{ ' · ' if not loop.last }}{% endfor %}</span>
               {%- endif %}
               {%- if a.strategies %}
               <br>Búsquedas probadas en el portal:
@@ -179,6 +195,12 @@
                     {%- if e.form_action %}, envía a <code>{{ e.form_action }}</code>{% endif %}
                   {%- endif %}
                   {%- if e.url %}<br><span class="note">{{ e.url }}</span>{% endif %}
+                  {%- if e.final_url and e.final_url != e.url %}
+                  <br><span class="note">acabó en: {{ e.final_url }}</span>
+                  {%- endif %}
+                  {%- if e.redirects %}
+                  <br><span class="note">redirecciones: {{ e.redirects | join(' → ') }}</span>
+                  {%- endif %}
                   {%- if e.headings %}<br><span class="note">títulos: {{ e.headings | join(' · ') }}</span>{% endif %}
                   {%- if e.error %} · {{ e.error }}{% endif %}
                   {%- if e.patterns %}

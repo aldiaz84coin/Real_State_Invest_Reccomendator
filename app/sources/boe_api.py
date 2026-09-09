@@ -29,8 +29,17 @@ from app.sources.base import BaseSource, SourceError, SourceStatus
 # Identificador de subasta tal y como aparece en el texto del anuncio.
 AUCTION_ID = re.compile(r"\b(SUB-[A-Z]{2}-\d{4}-\d+)\b")
 
-# Un anuncio de subasta se reconoce por su titulo. Se compara sin acentos.
-AUCTION_WORDS = ("subasta", "subastas")
+# Un anuncio de venta se reconoce por su titulo. Se compara sin acentos.
+# «Subasta» sola dejaba fuera lo que mas suelo saca al mercado: ADIF, SEPES,
+# el INVIED y los ayuntamientos enajenan por pliego, no por subasta
+# electronica, y sus anuncios no llevan esa palabra en el titulo. Los terminos
+# se mantienen especificos a proposito: anadir «licitacion» a secas metia en
+# el recorrido las miles de licitaciones de obra y servicios de cada dia.
+AUCTION_WORDS = (
+    "subasta", "subastas", "enajenacion", "enajenar", "venta de bien",
+    "venta de inmueble", "venta de parcela", "venta de solar",
+    "venta de finca", "venta de suelo", "venta directa", "venta mediante",
+)
 
 # Secciones donde se publican. Se guardan como texto porque el sumario las
 # identifica unas veces por codigo y otras por nombre.
@@ -99,7 +108,7 @@ class BoeSumarioSource(BaseSource):
                 yield from BoeSumarioSource.walk_items(elemento, seccion)
 
     def auction_items(self, payload: Any) -> list[dict[str, Any]]:
-        """Documentos del sumario que anuncian una subasta."""
+        """Documentos del sumario que anuncian una venta de patrimonio."""
         encontrados: list[dict[str, Any]] = []
         vistos: set[str] = set()
         for item in self.walk_items(payload):
@@ -140,14 +149,25 @@ class BoeSumarioSource(BaseSource):
     def xml_url(self, identificador: str) -> str:
         return f"{self.settings.boe_diario_url}/xml.php?id={identificador}"
 
-    def announcement_text(self, identificador: str, url: str = "") -> str:
-        """Texto completo del anuncio, que es donde va el número de subasta."""
+    def announcement_xml(self, identificador: str, url: str = "") -> str:
+        """XML del anuncio tal y como lo sirve el BOE.
+
+        Se guarda el documento sin tocar, y no sólo su texto plano, porque la
+        fuente que lee el suelo del anuncio necesita distinguir el cuerpo de
+        los metadatos, y con el texto ya aplanado no hay forma de separarlos.
+        """
         response = self.request("GET", url or self.xml_url(identificador))
         if response.status_code != 200:
             raise SourceError(
                 f"BOE HTTP {response.status_code} en el anuncio {identificador}"
             )
-        sin_etiquetas = re.sub(r"<[^>]+>", " ", response.text)
+        return response.text
+
+    def announcement_text(self, identificador: str, url: str = "") -> str:
+        """Texto completo del anuncio, que es donde va el número de subasta."""
+        sin_etiquetas = re.sub(
+            r"<[^>]+>", " ", self.announcement_xml(identificador, url)
+        )
         return re.sub(r"\s+", " ", sin_etiquetas).strip()
 
     @staticmethod
@@ -159,17 +179,25 @@ class BoeSumarioSource(BaseSource):
                 unicos.append(encontrado)
         return unicos
 
-    def recent_auction_ids(
-        self, days: int = 14, max_results: int = 40, today: date | None = None
+    def crawl(
+        self, days: int = 14, max_items: int = 60, today: date | None = None
     ) -> dict[str, Any]:
-        """Recorre los boletines recientes y devuelve las subastas anunciadas.
+        """Anuncios de venta de los últimos boletines, con su texto completo.
 
-        Se va hacia atrás desde hoy porque una subasta se anuncia una vez, el
-        día en que se abre; el portal es quien mantiene el estado, y el BOE
-        quien deja constancia de que existe.
+        Es el recorrido que comparten las dos fuentes que salen del Boletín: la
+        que busca el identificador de subasta electrónica y la que lee el suelo
+        del propio anuncio. Se hace una vez porque descargar dos veces los cien
+        y pico anuncios de un día es lo que antes hacía que el BOE empezara a
+        cortar peticiones a mitad del recorrido.
+
+        El resumen de cada día distingue las tres cosas que se confundían en un
+        único cero: cuántos anuncios había, cuántos no se pudieron descargar y
+        cuántos se descargaron sin traer identificador de subasta. Sin esa
+        distinción, «0 identificadas» no decía si fallaba la red, el filtro o
+        es que ese día no había ninguna.
         """
         hoy = today or date.today()
-        ids: list[str] = []
+        anuncios: list[dict[str, Any]] = []
         dias: list[dict[str, Any]] = []
 
         for retroceso in range(days):
@@ -187,29 +215,73 @@ class BoeSumarioSource(BaseSource):
                 dias.append(resumen)
                 continue
 
-            anuncios = self.auction_items(payload)
+            del_dia = self.auction_items(payload)
             resumen["published"] = True
-            resumen["auction_announcements"] = len(anuncios)
-            encontrados = 0
-            for anuncio in anuncios:
+            resumen["auction_announcements"] = len(del_dia)
+            fallos = con_id = sin_id = 0
+            ultimo_fallo = ""
+
+            for anuncio in del_dia:
+                if len(anuncios) >= max_items:
+                    break
                 try:
-                    texto = self.announcement_text(
+                    xml = self.announcement_xml(
                         anuncio["identificador"], anuncio["url_xml"]
                     )
-                except SourceError:
+                except SourceError as exc:
+                    fallos += 1
+                    ultimo_fallo = str(exc)[:160]
                     continue
-                for identificador in self.auction_ids(texto):
-                    if identificador not in ids:
-                        ids.append(identificador)
-                        encontrados += 1
-                if len(ids) >= max_results:
-                    break
-            resumen["auction_ids"] = encontrados
+                texto = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", xml)).strip()
+                ids = self.auction_ids(texto)
+                con_id += 1 if ids else 0
+                sin_id += 0 if ids else 1
+                anuncios.append(
+                    {**anuncio, "xml": xml, "texto": texto, "auction_ids": ids}
+                )
+
+            resumen["downloaded"] = con_id + sin_id
+            resumen["download_errors"] = fallos
+            resumen["with_auction_id"] = con_id
+            resumen["without_auction_id"] = sin_id
+            if ultimo_fallo:
+                resumen["last_error"] = ultimo_fallo
+            # Los títulos del día explican de un vistazo qué se está mirando
+            # cuando el recuento de candidatas no cuadra con lo esperado.
+            resumen["sample_titles"] = [a["titulo"][:120] for a in del_dia[:4]]
             dias.append(resumen)
-            if len(ids) >= max_results:
+            if len(anuncios) >= max_items:
                 break
 
-        return {"ids": ids[:max_results], "days": dias}
+        return {"announcements": anuncios, "days": dias}
+
+    def recent_auction_ids(
+        self, days: int = 14, max_results: int = 40, today: date | None = None
+    ) -> dict[str, Any]:
+        """Subastas electrónicas anunciadas en los boletines recientes.
+
+        Sólo las judiciales, notariales y de la Agencia Tributaria llevan
+        identificador `SUB-`: son las que se celebran en el Portal de Subastas.
+        Las ventas por pliego de ADIF, el INVIED o un ayuntamiento no lo tienen
+        y no aparecen aquí; ésas las recoge `BoeAnunciosSource` leyendo el
+        texto del anuncio.
+        """
+        recorrido = self.crawl(days=days, max_items=max(max_results * 4, 40),
+                               today=today)
+        ids: list[str] = []
+        for anuncio in recorrido["announcements"]:
+            for identificador in anuncio.get("auction_ids", []):
+                if identificador not in ids and len(ids) < max_results:
+                    ids.append(identificador)
+
+        for resumen in recorrido["days"]:
+            resumen["auction_ids"] = resumen.get("with_auction_id", 0)
+
+        return {
+            "ids": ids[:max_results],
+            "days": recorrido["days"],
+            "announcements": recorrido["announcements"],
+        }
 
     def check(self) -> SourceStatus:
         dia = date.today()

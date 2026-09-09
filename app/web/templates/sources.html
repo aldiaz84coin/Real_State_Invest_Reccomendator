@@ -37,7 +37,7 @@
           {% if s.docs_url %}<br><a class="note" href="{{ s.docs_url }}" target="_blank" rel="noopener">documentación</a>{% endif %}
         </td>
         <td class="note">
-          {% set kinds = {'listings':'Anuncios','cadastre':'Catastro','prices':'Precios','geo':'Geografía','rental':'Alquiler turístico'} %}
+          {% set kinds = {'listings':'Anuncios','catalog':'Vendedor de suelo','cadastre':'Catastro','prices':'Precios','geo':'Geografía','rental':'Alquiler turístico'} %}
           {{ kinds.get(s.kind, s.kind) }}
         </td>
         <td>

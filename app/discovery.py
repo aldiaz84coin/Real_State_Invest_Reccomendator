@@ -23,6 +23,7 @@ from app.logging_setup import log_operation
 from app.models import Listing, Municipality
 from app.sources.base import SourceError
 from app.sources.boe import BoeSubastasSource
+from app.sources.boe_anuncios import BoeAnunciosSource
 from app.sources.boe_api import BoeSumarioSource
 from app.sources.idealista import IdealistaSource
 from app.sources.rapidapi import iter_rapidapi_sources
@@ -62,7 +63,12 @@ def discover(
 
     # La API de datos abiertos del BOE va primero: es la vía documentada y sin
     # clave, y toda subasta pasa por el Boletín antes de existir en el portal.
-    attempts.append(_from_boe_api(province, max_results, candidates))
+    # Un único recorrido de boletines alimenta las dos fuentes que salen de
+    # ahí: pedir dos veces los mismos cien anuncios al día era lo que hacía
+    # que el BOE empezara a cortar peticiones a mitad de camino.
+    recorrido = _recorrer_boletines(max_results)
+    attempts.append(_from_boe_api(province, max_results, candidates, recorrido))
+    attempts.append(_from_boe_anuncios(province, max_results, candidates, recorrido))
 
     # Y detrás el buscador del portal, que no está documentado pero filtra por
     # provincia y no obliga a recorrer boletines día a día.
@@ -172,6 +178,8 @@ def _from_boe(
          "province_slot": detalle.get("province_slot"),
          "form_action": detalle.get("form_action"),
          "url": detalle.get("url"),
+         "final_url": detalle.get("final_url"),
+         "redirects": detalle.get("redirects"),
          "headings": detalle.get("headings"),
          "patterns": detalle.get("link_patterns"),
          "excerpt": detalle.get("body_excerpt"),
@@ -202,10 +210,20 @@ def _from_boe(
     return info
 
 
+def _recorrer_boletines(max_results: int) -> dict[str, Any]:
+    """Un solo paseo por los boletines recientes, compartido por dos fuentes."""
+    sumario = BoeSumarioSource()
+    try:
+        return sumario.recent_auction_ids(max_results=min(max_results, 25))
+    except SourceError as exc:
+        return {"error": str(exc)[:250], "ids": [], "days": [], "announcements": []}
+
+
 def _from_boe_api(
-    province: str | None, max_results: int, out: list[dict[str, Any]]
+    province: str | None, max_results: int, out: list[dict[str, Any]],
+    recorrido: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Subastas anunciadas en el Boletín, por la API de datos abiertos."""
+    """Subastas electrónicas anunciadas en el Boletín, con ficha en el portal."""
     sumario = BoeSumarioSource()
     portal = BoeSubastasSource()
     info: dict[str, Any] = {
@@ -214,10 +232,9 @@ def _from_boe_api(
         "radius_note": getattr(sumario, "radius_note", ""),
         "scope": f"provincia {province}" if province else "toda España",
     }
-    try:
-        hallazgo = sumario.recent_auction_ids(max_results=min(max_results, 25))
-    except SourceError as exc:
-        info["error"] = str(exc)[:250]
+    hallazgo = recorrido if recorrido is not None else _recorrer_boletines(max_results)
+    if hallazgo.get("error"):
+        info["error"] = hallazgo["error"]
         return info
 
     info["days"] = hallazgo["days"]
@@ -240,6 +257,42 @@ def _from_boe_api(
             out.append(item)
             found += 1
     info["found"] = found
+    return info
+
+
+def _from_boe_anuncios(
+    province: str | None, max_results: int, out: list[dict[str, Any]],
+    recorrido: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Suelo leído del texto del anuncio, sin pasar por el Portal de Subastas.
+
+    Es la vía que recoge lo que el camino anterior perdía entero: SEPES, ADIF,
+    el INVIED y los ayuntamientos venden por pliego, sus anuncios no llevan
+    identificador `SUB-` y por eso ninguno llegaba a ser candidata.
+    """
+    fuente = BoeAnunciosSource()
+    info: dict[str, Any] = {
+        "source": fuente.key,
+        "name": fuente.name,
+        "radius_note": getattr(fuente, "radius_note", ""),
+        "scope": f"provincia {province}" if province else "toda España",
+    }
+    hallazgo = recorrido if recorrido is not None else _recorrer_boletines(max_results)
+    if hallazgo.get("error"):
+        info["error"] = hallazgo["error"]
+        return info
+
+    anuncios = hallazgo.get("announcements") or []
+    info["announcements_read"] = len(anuncios)
+    resultado = fuente.from_crawl(
+        anuncios, province=province, max_results=max_results
+    )
+    # Los descartes se enseñan porque son la mitad del diagnóstico: saber que
+    # se leyeron ochenta anuncios y setenta no eran de suelo es una respuesta,
+    # y "0 encontradas" no lo es.
+    info["discarded"] = resultado["discarded"]
+    out.extend(resultado["candidates"])
+    info["found"] = len(resultado["candidates"])
     return info
 
 
