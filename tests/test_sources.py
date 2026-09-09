@@ -592,7 +592,7 @@ class TestIdealista17:
                 return httpx.Response(401, request=httpx.Request(method, url))
 
             monkeypatch.setattr(httpx.Client, "request", fake)
-            with pytest.raises(SourceError, match="rechazada"):
+            with pytest.raises(SourceError, match="HTTP 401"):
                 source.fetch_page({})
             assert llamadas["n"] == 1
         finally:
@@ -642,8 +642,10 @@ class TestDiagnosticoDelPanel:
         finally:
             get_settings.cache_clear()
 
-    def test_el_401_se_explica_como_falta_de_suscripcion(self, monkeypatch):
-        """Es la causa real: en RapidAPI hay que suscribirse a cada API."""
+    def test_el_401_se_explica_sin_dar_por_hecho_la_causa(self, monkeypatch):
+        """En RapidAPI hay proveedores que contestan 401 a «no suscrito» y
+        otros a «clave inválida», así que el código por sí solo no decide:
+        se explican las dos salidas y manda el mensaje del proveedor."""
         from app.config import get_settings
 
         source = self._source(monkeypatch)
@@ -656,7 +658,8 @@ class TestDiagnosticoDelPanel:
             )
             status = source.check()
             assert status.access == "needs_credentials"
-            assert "suscribirse a CADA API" in status.detail
+            assert "Puede ser la clave o puede ser la suscripción" in status.detail
+            assert "suscribe ESA aplicación" in status.detail
             assert "Subscribe to Test" in status.detail
         finally:
             get_settings.cache_clear()
@@ -2430,7 +2433,7 @@ class TestSinDuplicarLoDelPortal:
 
 
 class TestHostEquivocadoEnRapidApi:
-    """Un 404 aquí casi nunca es «no hay datos»: es un host de otro proveedor.
+    """Un 404 en las rutas de búsqueda casi nunca es «no hay datos».
 
     En RapidAPI varios revendedores sirven el mismo portal con rutas distintas,
     y los nombres se parecen tanto —fotocasa1 y fotocasa3, idealista17 y
@@ -2438,47 +2441,109 @@ class TestHostEquivocadoEnRapidApi:
     «HTTP 404» a secas y obligaba a adivinar justo eso.
     """
 
-    def _fotocasa(self, monkeypatch, host=None):
+    def _sondear(self, monkeypatch, host=None, respuesta=None):
         import httpx
 
         from app.config import get_settings
         import app.sources.rapidapi as rapidapi
 
-        monkeypatch.setenv("RAPIDAPI_KEYS", "rapidapi_fotocasa=clave")
+        monkeypatch.setenv("RAPIDAPI_KEYS", "rapidapi_idealista=clave")
         if host:
-            monkeypatch.setenv("RAPIDAPI_HOSTS", f"rapidapi_fotocasa={host}")
+            monkeypatch.setenv("RAPIDAPI_HOSTS", f"rapidapi_idealista={host}")
+        get_settings.cache_clear()
+        rapidapi._check_cache.clear()
+        monkeypatch.setattr(
+            httpx.Client, "request",
+            respuesta or (lambda self, method, url, **kw: httpx.Response(
+                404, text="", request=httpx.Request(method, url))),
+        )
+        fuente = next(s for s in rapidapi.iter_rapidapi_sources()
+                      if s.key == "rapidapi_idealista")
+        estado = fuente.check()
+        get_settings.cache_clear()
+        rapidapi._check_cache.clear()
+        return estado
+
+    def test_el_404_dice_que_el_host_no_reconoce_las_rutas(self, monkeypatch):
+        estado = self._sondear(monkeypatch, "otro-proveedor.p.rapidapi.com")
+        assert "no reconoce las rutas" in estado.detail
+
+    def test_nombra_los_dos_hosts_para_poder_compararlos(self, monkeypatch):
+        """Sin ver ambos no se nota que son proveedores distintos."""
+        estado = self._sondear(monkeypatch, "otro-proveedor.p.rapidapi.com")
+        assert "otro-proveedor.p.rapidapi.com" in estado.detail
+        assert "idealista-api1.p.rapidapi.com" in estado.detail
+        assert estado.extra["host_sobrescrito"] is True
+
+    def test_el_host_en_uso_sale_siempre_en_el_estado(self, monkeypatch):
+        """Es el dato que faltaba para diagnosticar sin tocar el servidor."""
+        estado = self._sondear(monkeypatch, "otro-proveedor.p.rapidapi.com")
+        assert estado.extra["host"] == "otro-proveedor.p.rapidapi.com"
+        assert estado.extra["host_por_defecto"] == "idealista-api1.p.rapidapi.com"
+
+
+class TestRechazoDeRapidApi:
+    """401 y 403 no son el mismo problema, y se trataban igual.
+
+    El panel mandaba a suscribirse a quien ya lo estaba. Y encima descartaba el
+    mensaje del propio RapidAPI, que es lo único que lo dice sin ambigüedad.
+    """
+
+    def _rechazo(self, monkeypatch, codigo, cuerpo):
+        import httpx
+
+        from app.config import get_settings
+        import app.sources.rapidapi as rapidapi
+
+        monkeypatch.setenv("RAPIDAPI_KEYS", "rapidapi_idealista=clave-de-prueba-1234")
         get_settings.cache_clear()
         rapidapi._check_cache.clear()
         monkeypatch.setattr(
             httpx.Client, "request",
             lambda self, method, url, **kw: httpx.Response(
-                404, text="", request=httpx.Request(method, url)),
+                codigo, text=cuerpo, headers={"content-type": "application/json"},
+                request=httpx.Request(method, url)),
         )
         fuente = next(s for s in rapidapi.iter_rapidapi_sources()
-                      if s.key == "rapidapi_fotocasa")
+                      if s.key == "rapidapi_idealista")
         estado = fuente.check()
         get_settings.cache_clear()
+        rapidapi._check_cache.clear()
         return estado
 
-    def test_el_404_dice_que_el_host_no_reconoce_las_rutas(self, monkeypatch):
-        estado = self._fotocasa(monkeypatch, "fotocasa1.p.rapidapi.com")
-        assert "no reconoce las rutas" in estado.detail
-        assert "/searchads" in estado.detail
+    def test_el_403_dice_que_la_suscripcion_es_de_la_aplicacion(self, monkeypatch):
+        """Estar suscrito con otra app del mismo usuario no sirve."""
+        estado = self._rechazo(
+            monkeypatch, 403, '{"message":"You are not subscribed to this API."}'
+        )
+        assert "APLICACIÓN, no de la cuenta" in estado.detail
 
-    def test_nombra_los_dos_hosts_para_poder_compararlos(self, monkeypatch):
-        """Sin ver ambos no se nota que son proveedores distintos."""
-        estado = self._fotocasa(monkeypatch, "fotocasa1.p.rapidapi.com")
-        assert "fotocasa1.p.rapidapi.com" in estado.detail
-        assert "fotocasa3.p.rapidapi.com" in estado.detail
-        assert estado.extra["host_sobrescrito"] is True
+    def test_el_401_no_afirma_cual_de_las_dos_cosas_es(self, monkeypatch):
+        """Hay proveedores que devuelven 401 para «no suscrito»: afirmar que es
+        la clave mandaba a rotar una clave que estaba bien."""
+        estado = self._rechazo(
+            monkeypatch, 401, '{"message":"Invalid API key"}'
+        )
+        assert "Puede ser la clave o puede ser la suscripción" in estado.detail
 
-    def test_sin_sobrescribir_apunta_a_la_suscripcion(self, monkeypatch):
-        estado = self._fotocasa(monkeypatch)
-        assert estado.extra["host_sobrescrito"] is False
-        assert "suscrito a fotocasa3.p.rapidapi.com" in estado.detail
+    def test_se_incluye_el_mensaje_del_propio_rapidapi(self, monkeypatch):
+        """Es lo único que distingue los dos casos sin ambigüedad."""
+        estado = self._rechazo(
+            monkeypatch, 403, '{"message":"You are not subscribed to this API."}'
+        )
+        assert "You are not subscribed to this API." in estado.detail
 
-    def test_el_host_en_uso_sale_siempre_en_el_estado(self, monkeypatch):
-        """Es el dato que faltaba para diagnosticar sin tocar el servidor."""
-        estado = self._fotocasa(monkeypatch, "fotocasa1.p.rapidapi.com")
-        assert estado.extra["host"] == "fotocasa1.p.rapidapi.com"
-        assert estado.extra["rutas"] == ["/searchads"]
+    def test_la_huella_identifica_la_clave_sin_ensenarla(self, monkeypatch):
+        """La causa más común de un rechazo es que el servidor no tiene la
+        clave que uno cree; enseñarla entera en un panel web no es opción."""
+        estado = self._rechazo(monkeypatch, 401, "{}")
+        assert "clave-…1234" in estado.detail
+        assert "clave-de-prueba-1234" not in estado.detail
+
+    def test_un_404_en_la_ruta_de_salud_no_marca_la_fuente_en_rojo(self):
+        """Pocos proveedores tienen ruta de salud. Y si la petición llegó a
+        contestar 404, la pasarela la dejó pasar: la clave y la suscripción
+        están bien, que es lo contrario de lo que decía el panel."""
+        from app.sources.rapidapi import RapidApiFotocasaSource
+
+        assert RapidApiFotocasaSource.health_path == "/health"
