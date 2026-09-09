@@ -343,23 +343,45 @@ def import_candidates(db: Session, payloads: list[dict[str, Any]]) -> dict[str, 
     from app.services import analyze_listing
 
     created = updated = skipped = 0
+    # Por que se descarta cada una. "1 descartadas por falta de datos" no decia
+    # si faltaba el precio, si el Catastro no conocia la referencia o si el
+    # municipio no estaba en la tabla, que son tres arreglos distintos.
+    motivos: list[dict[str, Any]] = []
     for payload in payloads:
         item = {k: v for k, v in payload.items() if k in LISTING_FIELDS}
         cadastral = item.pop("cadastral_ref", None)
+        etiqueta = str(item.get("external_id") or item.get("url") or "?")
 
-        if not item.get("external_id") or not item.get("price_eur") or not item.get("area_m2"):
+        faltan = [campo for campo in ("external_id", "price_eur", "area_m2")
+                  if not item.get(campo)]
+        if faltan:
             skipped += 1
+            motivos.append({"candidate": etiqueta,
+                            "reason": f"faltan datos obligatorios: {', '.join(faltan)}"})
             continue
         item["external_id"] = str(item["external_id"])
 
         # La referencia catastral da la posicion exacta y la forma real; sin
         # ella el analisis del entorno seria sobre un punto aproximado.
+        detalle_catastro = ""
         if cadastral and not item.get("lat"):
-            _fill_from_cadastre(item, cadastral)
+            detalle_catastro = _fill_from_cadastre(item, cadastral)
         if not item.get("lat"):
             resolved = resolve_missing_coords(db, item)
             if resolved is None:
                 skipped += 1
+                municipio = (item.get("municipality_name") or "").strip()
+                motivos.append({
+                    "candidate": etiqueta,
+                    "reason": (
+                        "no se pudo situar en el mapa. "
+                        + (f"Catastro: {detalle_catastro}. " if detalle_catastro else "")
+                        + (f"El municipio «{municipio}» no está en la tabla local "
+                           "ni lo reconoció el geocodificador."
+                           if municipio else
+                           "El anuncio no nombra municipio de forma reconocible.")
+                    ),
+                })
                 continue
             item["lat"], item["lon"] = resolved
         if cadastral:
@@ -403,22 +425,45 @@ def import_candidates(db: Session, payloads: list[dict[str, Any]]) -> dict[str, 
     log_operation("importar", nuevas=created, actualizadas=updated,
                   descartadas=skipped, analizadas=analyzed)
     return {"created": created, "updated": updated,
-            "skipped": skipped, "analyzed": analyzed}
+            "skipped": skipped, "analyzed": analyzed,
+            "skipped_reasons": motivos}
 
 
-def _fill_from_cadastre(item: dict[str, Any], cadastral_ref: str) -> None:
+def _fill_from_cadastre(item: dict[str, Any], cadastral_ref: str) -> str:
+    """Sitúa la parcela por su referencia catastral. Devuelve qué ha pasado.
+
+    Se intenta primero la geometría, que además del punto da la forma real de
+    la parcela. Si el WFS no la sirve se pide sólo el punto: pasa con las
+    rústicas, que son justo las que traen las subastas del BOE, y quedarse ahí
+    tiraba la candidata entera pese a venir con su referencia.
+
+    Antes se tragaba cualquier excepción en silencio, así que una referencia
+    mal leída y un Catastro caído se veían igual: como nada.
+    """
     from app.sources.catastro import CatastroSource
 
+    catastro = CatastroSource()
     try:
-        feature = CatastroSource().parcel_geometry(cadastral_ref)
-    except Exception:
-        return
-    ring = extract_ring_safe(feature) if feature else None
-    if not ring:
-        return
-    item["lat"] = sum(p[1] for p in ring) / len(ring)
-    item["lon"] = sum(p[0] for p in ring) / len(ring)
-    item["parcel_geojson"] = feature
+        feature = catastro.parcel_geometry(cadastral_ref)
+        ring = extract_ring_safe(feature) if feature else None
+        if ring:
+            item["lat"] = sum(p[1] for p in ring) / len(ring)
+            item["lon"] = sum(p[0] for p in ring) / len(ring)
+            item["parcel_geojson"] = feature
+            return ""
+        fallo_geometria = "el WFS no devolvió geometría"
+    except Exception as exc:
+        fallo_geometria = f"{type(exc).__name__}: {str(exc)[:120]}"
+
+    try:
+        punto = catastro.coords_for_ref(cadastral_ref)
+    except Exception as exc:
+        return f"{fallo_geometria}; y por punto {type(exc).__name__}: {str(exc)[:120]}"
+    if punto:
+        item["lat"], item["lon"] = punto
+        item["coords_precision"] = "parcel_point"
+        return ""
+    return f"{fallo_geometria}; y el punto vino vacío"
 
 
 def extract_ring_safe(feature: dict[str, Any]) -> list[list[float]] | None:
@@ -431,14 +476,34 @@ def extract_ring_safe(feature: dict[str, Any]) -> list[list[float]] | None:
 
 
 def resolve_missing_coords(db: Session, item: dict[str, Any]) -> tuple[float, float] | None:
-    """Coordenadas del municipio del anuncio, si se reconoce por nombre."""
+    """Coordenadas del municipio del anuncio, si se reconoce por nombre.
+
+    La tabla local trae los municipios grandes, y el suelo barato está en los
+    pequeños: Ballobar, con doscientos vecinos, no aparece en ella, así que sus
+    parcelas se descartaban. Por eso, si la tabla no lo conoce, se pregunta a
+    Nominatim, que es gratuito y cubre España entera. Se le da también la
+    provincia porque hay municipios homónimos en varias.
+    """
     name = (item.get("municipality_name") or "").strip()
     if not name:
         return None
     found = db.execute(
         select(Municipality).where(Municipality.name.ilike(name))
     ).scalars().first()
-    return (found.lat, found.lon) if found else None
+    if found:
+        return (found.lat, found.lon)
+
+    provincia = (item.get("province") or "").strip()
+    consulta = f"{name}, {provincia}, España" if provincia else f"{name}, España"
+    try:
+        from app.sources.osm import NominatimSource
+
+        punto = NominatimSource().geocode(consulta)
+    except Exception:
+        return None
+    if not punto:
+        return None
+    return (float(punto["lat"]), float(punto["lon"]))
 
 
 def match_municipality(
