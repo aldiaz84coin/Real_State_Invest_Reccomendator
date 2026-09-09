@@ -2547,3 +2547,134 @@ class TestRechazoDeRapidApi:
         from app.sources.rapidapi import RapidApiFotocasaSource
 
         assert RapidApiFotocasaSource.health_path == "/health"
+
+
+class TestPorQueNoSeIncorpora:
+    """«1 descartadas por falta de datos» no permitía arreglar nada.
+
+    Faltar el precio, no conocer el Catastro la referencia y no reconocerse el
+    municipio son tres problemas distintos, con tres soluciones distintas, y se
+    contaban todos en el mismo número sin decir cuál era.
+    """
+
+    def _importar(self, db, payload):
+        from app.discovery import import_candidates
+
+        return import_candidates(db, [payload])
+
+    def test_dice_que_campo_obligatorio_falta(self, db_session):
+        resultado = self._importar(db_session, {
+            "source": "boe_anuncios", "external_id": "BOE-B-1",
+            "area_m2": 1000.0,  # sin precio
+        })
+        assert resultado["skipped"] == 1
+        assert "price_eur" in resultado["skipped_reasons"][0]["reason"]
+
+    def test_dice_cuando_no_se_puede_situar_en_el_mapa(self, db_session, monkeypatch):
+        import app.discovery as discovery
+
+        monkeypatch.setattr(discovery, "_fill_from_cadastre",
+                            lambda item, ref: "el WFS no devolvió geometría")
+        monkeypatch.setattr(discovery, "resolve_missing_coords",
+                            lambda db, item: None)
+        resultado = self._importar(db_session, {
+            "source": "boe_anuncios", "external_id": "BOE-B-2",
+            "price_eur": 2462.0, "area_m2": 69055.0,
+            "cadastral_ref": "22288C006003510000LS",
+            "municipality_name": "Ballobar", "province": "Huesca",
+        })
+        motivo = resultado["skipped_reasons"][0]["reason"]
+        assert "no se pudo situar en el mapa" in motivo
+        assert "el WFS no devolvió geometría" in motivo
+        assert "Ballobar" in motivo
+
+    def test_distingue_no_tener_municipio_de_no_reconocerlo(self, db_session, monkeypatch):
+        import app.discovery as discovery
+
+        monkeypatch.setattr(discovery, "_fill_from_cadastre", lambda item, ref: "")
+        monkeypatch.setattr(discovery, "resolve_missing_coords", lambda db, item: None)
+        resultado = self._importar(db_session, {
+            "source": "boe_anuncios", "external_id": "BOE-B-3",
+            "price_eur": 1000.0, "area_m2": 500.0, "municipality_name": "",
+        })
+        assert "no nombra municipio" in resultado["skipped_reasons"][0]["reason"]
+
+
+class TestSituarLaParcelaPorCatastro:
+    """Las subastas del BOE traen fincas rústicas, y el WFS no siempre las sirve."""
+
+    def test_el_punto_sirve_cuando_no_hay_geometria(self, monkeypatch):
+        """Sin esto la candidata se tiraba entera pese a traer su referencia."""
+        import app.discovery as discovery
+        from app.sources.catastro import CatastroSource
+
+        monkeypatch.setattr(CatastroSource, "parcel_geometry",
+                            lambda self, ref: None)
+        monkeypatch.setattr(CatastroSource, "coords_for_ref",
+                            lambda self, ref: (41.5678, -0.1234))
+        item: dict = {}
+        assert discovery._fill_from_cadastre(item, "22056B505001480000MS") == ""
+        assert (item["lat"], item["lon"]) == (41.5678, -0.1234)
+        assert item["coords_precision"] == "parcel_point"
+
+    def test_el_fallo_del_catastro_deja_de_tragarse(self, monkeypatch):
+        """Una referencia mal leída y un Catastro caído se veían igual: nada."""
+        import app.discovery as discovery
+        from app.sources.base import SourceError
+        from app.sources.catastro import CatastroSource
+
+        def revienta(self, ref):
+            raise SourceError("REFERENCIA CATASTRAL NO ENCONTRADA")
+
+        monkeypatch.setattr(CatastroSource, "parcel_geometry", revienta)
+        monkeypatch.setattr(CatastroSource, "coords_for_ref", revienta)
+        motivo = discovery._fill_from_cadastre({}, "MAL")
+        assert "REFERENCIA CATASTRAL NO ENCONTRADA" in motivo
+
+    def test_lee_el_punto_de_consulta_cpmrc(self):
+        from app.sources.catastro import CatastroSource
+
+        xml = ("<consulta_coordenadas><coordenadas><coord><geo>"
+               "<xcen>-0.1234</xcen><ycen>41.5678</ycen></geo>"
+               "</coord></coordenadas></consulta_coordenadas>")
+        assert CatastroSource.parse_coords(xml) == (41.5678, -0.1234)
+
+    def test_un_error_del_ovc_no_se_confunde_con_parcela_inexistente(self):
+        """El servicio contesta 200 también cuando falla, con el motivo dentro."""
+        from app.sources.base import SourceError
+        from app.sources.catastro import CatastroSource
+
+        xml = ("<consulta_coordenadas><lerr><err>"
+               "<des>REFERENCIA CATASTRAL NO ENCONTRADA</des>"
+               "</err></lerr></consulta_coordenadas>")
+        with pytest.raises(SourceError, match="NO ENCONTRADA"):
+            CatastroSource.parse_coords(xml)
+
+
+class TestMunicipioPequeno:
+    """El suelo barato está en pueblos que no caben en una tabla de 116."""
+
+    def test_si_la_tabla_no_lo_conoce_se_geocodifica(self, db_session, monkeypatch):
+        """Ballobar, doscientos vecinos, no está en la tabla local: sus
+        parcelas se descartaban aunque el anuncio dijera dónde estaban."""
+        from app.discovery import resolve_missing_coords
+        from app.sources.osm import NominatimSource
+
+        pedido = {}
+
+        def falso(self, query):
+            pedido["query"] = query
+            return {"lat": 41.6, "lon": -0.15, "display_name": "Ballobar"}
+
+        monkeypatch.setattr(NominatimSource, "geocode", falso)
+        punto = resolve_missing_coords(
+            db_session, {"municipality_name": "Ballobar", "province": "Huesca"}
+        )
+        assert punto == (41.6, -0.15)
+        # La provincia va en la consulta: hay municipios homónimos.
+        assert "Huesca" in pedido["query"]
+
+    def test_sin_municipio_no_se_inventa_un_punto(self, db_session):
+        from app.discovery import resolve_missing_coords
+
+        assert resolve_missing_coords(db_session, {"municipality_name": ""}) is None

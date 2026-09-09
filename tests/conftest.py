@@ -52,3 +52,23 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "red_real: el test necesita salida de red de verdad"
     )
+
+
+@pytest.fixture
+def db_session(tmp_path):
+    """Base vacía y aislada para cada test.
+
+    Va a un fichero del propio test y no a la de desarrollo: los tests que
+    escriben no deben depender de lo que haya guardado antes, ni dejar rastro.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db import Base
+    import app.models  # noqa: F401  — registra las tablas en el metadata
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'prueba.db'}", future=True)
+    Base.metadata.create_all(engine)
+    with sessionmaker(bind=engine, future=True)() as sesion:
+        yield sesion
+    engine.dispose()

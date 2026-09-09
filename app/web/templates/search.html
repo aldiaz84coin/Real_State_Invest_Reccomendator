@@ -73,8 +73,18 @@
   <div class="alert ok" style="margin-top:12px">
     <strong>{{ import_result.created }} incorporadas</strong>,
     {{ import_result.updated }} actualizadas,
-    {{ import_result.skipped }} descartadas por falta de datos.
+    {{ import_result.skipped }} descartadas.
     Se han analizado {{ import_result.analyzed }} anuncios.
+    {#- Decir sólo cuántas se descartan no permite arreglarlo: faltar el precio,
+        no conocer el Catastro la referencia y no reconocerse el municipio son
+        tres problemas distintos con tres soluciones distintas. -#}
+    {% if import_result.skipped_reasons %}
+    <ul style="margin:8px 0 0 16px">
+      {% for m in import_result.skipped_reasons %}
+      <li><code>{{ m.candidate }}</code> — {{ m.reason }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -121,7 +131,9 @@
             </td>
             <td class="num">{{ '{:,.0f}'.format(c.area_m2 or 0) }}</td>
             <td class="num">{{ '{:,.0f}'.format(c.price_eur or 0) }} €</td>
-            <td class="num">{{ '%.0f'|format(c.price_eur_m2 or 0) }}</td>
+            {# Dos decimales por debajo de 10 €/m²: una finca rústica a 0,04
+               €/m² se veía como «0», que es justo la información que importa. #}
+            <td class="num">{{ ('%.2f'|format(c.price_eur_m2)) if (c.price_eur_m2 or 0) < 10 else ('%.0f'|format(c.price_eur_m2 or 0)) }}</td>
             <td>{% if c.url %}<a href="{{ c.url }}" target="_blank" rel="noopener">ver</a>{% endif %}</td>
           </tr>
         {% endfor %}
@@ -248,7 +260,7 @@
           </td>
           <td><strong>{{ r.municipality or r.title[:36] }}</strong><br><span class="note">{{ r.province }}{% if r.nearest_poi %} · {{ r.nearest_poi[:26] }}{% endif %}</span></td>
           <td class="num">{{ '{:,.0f}'.format(r.area_m2) }}</td>
-          <td class="num">{{ '%.0f'|format(r.price_eur_m2) }}</td>
+          <td class="num">{{ ('%.2f'|format(r.price_eur_m2)) if r.price_eur_m2 < 10 else ('%.0f'|format(r.price_eur_m2)) }}</td>
           <td class="num">{% if r.discount_pct > 0 %}<span class="badge ok">−{{ '%.0f'|format(r.discount_pct) }}%</span>{% else %}—{% endif %}</td>
           <td class="num"><strong>{{ r.score }}</strong></td>
         </tr>
@@ -339,7 +351,7 @@
         radius: 6 + Math.min(r.score / 14, 7), color, fillColor: color, fillOpacity: .65, weight: 2
       }).bindPopup(
         `<strong>${r.municipality || ''}</strong><br>${r.area_m2.toLocaleString('es-ES')} m² · ` +
-        `${r.price_eur.toLocaleString('es-ES')} €<br>${r.price_eur_m2.toFixed(0)} €/m² ` +
+        `${r.price_eur.toLocaleString('es-ES')} €<br>${r.price_eur_m2 < 10 ? r.price_eur_m2.toFixed(2) : r.price_eur_m2.toFixed(0)} €/m² ` +
         `(−${r.discount_pct.toFixed(0)}% vs zona)<br>Nota ${r.score}<br>` +
         `<a href="/oportunidad/${r.id}">Ver ficha</a>`
       ).addTo(group);

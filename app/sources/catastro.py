@@ -96,6 +96,48 @@ class CatastroSource(BaseSource):
 
     # -- geometria de la parcela -----------------------------------------
 
+    def coords_for_ref(self, cadastral_ref: str) -> tuple[float, float] | None:
+        """Coordenadas de una parcela por su referencia catastral.
+
+        Existe como respaldo del WFS de INSPIRE, que sirve la geometría pero no
+        siempre responde a las parcelas rústicas: son las que traen las
+        subastas del BOE, y sin coordenadas la candidata se descartaba entera
+        aunque el anuncio trajera su referencia. Este servicio no da polígono,
+        sólo el punto, que es suficiente para situar la parcela y analizarla.
+
+        Consulta_CPMRC admite provincia y municipio vacíos: con la referencia
+        completa el propio Catastro los deduce.
+        """
+        response = self.request(
+            "GET", f"{self._coords_url}/Consulta_CPMRC",
+            params={"Provincia": "", "Municipio": "", "SRS": "EPSG:4326",
+                    "RC": cadastral_ref},
+        )
+        if response.status_code != 200:
+            raise SourceError(f"Catastro Consulta_CPMRC HTTP {response.status_code}")
+        return self.parse_coords(response.text)
+
+    @staticmethod
+    def parse_coords(xml_text: str) -> tuple[float, float] | None:
+        """Punto (lat, lon) de una respuesta de Consulta_CPMRC.
+
+        Como el resto de servicios OVC, contesta 200 también cuando falla y
+        pone el motivo en el cuerpo: tomarlo por «no hay parcela» ocultaría un
+        error de parámetros, que es un diagnóstico distinto.
+        """
+        root = ET.fromstring(xml_text)
+        xcen, ycen = _first_text(root, "xcen"), _first_text(root, "ycen")
+        if xcen and ycen:
+            try:
+                # El servicio devuelve xcen como longitud e ycen como latitud.
+                return float(ycen), float(xcen)
+            except ValueError:
+                return None
+        error = _first_text(root, "des")
+        if error:
+            raise SourceError(f"Catastro: {error}")
+        return None
+
     def parcel_geometry(self, cadastral_ref: str) -> dict[str, Any] | None:
         """Descarga el poligono de una parcela por referencia catastral.
 
