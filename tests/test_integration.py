@@ -644,3 +644,33 @@ class TestAtajosQueReproducenAlConector:
         preset = self._presets(client)["fotocasa · 1. sacar la zona"]
         assert preset["path"] == RapidApiFotocasaSource.suggestions_path
         assert "query" in preset["params"]
+
+
+class TestVersionDesplegada:
+    """«¿Está corriendo lo último?» no debería ser una adivinanza.
+
+    El panel de Fly llegó a enseñar el commit de una rama vieja mientras el
+    workflow había desplegado main correctamente, y no había forma de saber
+    cuál de los dos decía la verdad. Ahora se le pregunta a la aplicación, que
+    lleva dentro el commit del que salió su imagen.
+    """
+
+    def test_health_dice_la_version(self, client):
+        datos = client.get("/health").json()
+        assert datos["status"] == "ok"
+        assert "version" in datos
+
+    def test_sin_commit_inyectado_lo_dice_en_vez_de_inventarlo(self, client, monkeypatch):
+        """«desconocida» es una respuesta honesta; «main» sería mentira."""
+        monkeypatch.delenv("GIT_SHA", raising=False)
+        assert client.get("/version").json()["version"] == "desconocida"
+
+    def test_con_commit_inyectado_lo_publica_y_enlaza(self, client, monkeypatch):
+        monkeypatch.setenv("GIT_SHA", "2bcadd7e1b9b1b5de96dd1b05a208b27692579c2")
+        datos = client.get("/version").json()
+        assert datos["version"] == "2bcadd7e1b9b1b5de96dd1b05a208b27692579c2"
+        assert datos["commit_url"].endswith(datos["version"])
+
+    def test_sin_version_no_se_enlaza_a_ninguna_parte(self, client, monkeypatch):
+        monkeypatch.delenv("GIT_SHA", raising=False)
+        assert client.get("/version").json()["commit_url"] == ""
