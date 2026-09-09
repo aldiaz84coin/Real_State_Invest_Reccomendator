@@ -10,11 +10,22 @@
   decir cuál: la única forma de acertar es probar y leer la respuesta entera.
 </p>
 
+{% if lista_antigua %}
+<div class="alert warn">
+  <strong>RAPIDAPI_KEYS sigue puesta.</strong> Es el formato antiguo, una lista
+  separada por comas, y ahora va la última: manda la variable propia de cada
+  fuente y después <code>RAPIDAPI_KEY</code>. Mientras esté ahí invita a buscar
+  el problema donde no está, así que conviene quitarla:
+  <code>fly secrets unset RAPIDAPI_KEYS</code>.
+</div>
+{% endif %}
+
 <div class="card section">
   <h2>Estado de cada fuente</h2>
   <table>
     <thead><tr>
-      <th>Fuente</th><th>Host en uso</th><th>Clave enviada</th><th>Rutas que prueba</th>
+      <th>Fuente</th><th>Host en uso</th><th>Clave enviada</th>
+      <th>Secreto que la da</th><th>Rutas que prueba</th>
     </tr></thead>
     <tbody>
       {% for f in fuentes %}
@@ -26,6 +37,18 @@
         {# La huella es lo que permite ver de un vistazo que el servidor usa una
            clave distinta de la que uno prueba a mano, que ha pasado. #}
         <td><code>{{ f.key_fingerprint }}</code></td>
+        {# De qué variable sale, que es lo que no se veía: una lista antigua
+           estaba pisando a la global y cada fuente mandaba una clave distinta. #}
+        <td>
+          {%- if f.key_origin %}<code>{{ f.key_origin }}</code>
+            {%- if f.key_env and f.key_origin != f.key_env %}
+            <br><span class="note">su variable propia es
+              <code>{{ f.key_env }}</code> y está vacía</span>{% endif %}
+          {%- else %}<span class="badge mute">sin clave</span>
+            {%- if f.key_env %}<br><span class="note">pon
+              <code>{{ f.key_env }}</code></span>{% endif %}
+          {%- endif %}
+        </td>
         <td>{% for r in f.rutas %}<code>{{ r }}</code>{{ ' · ' if not loop.last }}{% endfor %}</td>
       </tr>
       {% endfor %}

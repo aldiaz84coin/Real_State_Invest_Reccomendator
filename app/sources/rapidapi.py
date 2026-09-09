@@ -82,6 +82,15 @@ class RapidApiSource(BaseSource):
         return self.settings.rapidapi_key_for(self.key)
 
     @property
+    def key_origin(self) -> str:
+        """Variable de entorno de la que sale la clave que se está usando.
+
+        Se enseña en el panel porque no saberlo costó dos rondas: cada fuente
+        mandaba una clave distinta y no había forma de ver de dónde salía.
+        """
+        return self.settings.rapidapi_key_with_origin(self.key)[1]
+
+    @property
     def search_path(self) -> str:
         """Ruta en uso: la que ya funciono, o la primera candidata."""
         return self._working_path or self.search_paths[0]
