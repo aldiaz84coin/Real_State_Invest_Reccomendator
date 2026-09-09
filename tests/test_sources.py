@@ -2511,12 +2511,15 @@ class TestRechazoDeRapidApi:
         rapidapi._check_cache.clear()
         return estado
 
-    def test_el_403_dice_que_la_suscripcion_es_de_la_aplicacion(self, monkeypatch):
-        """Estar suscrito con otra app del mismo usuario no sirve."""
+    def test_el_403_situa_bien_la_suscripcion_y_la_clave(self, monkeypatch):
+        """La documentación de RapidAPI lo separa: la suscripción y la
+        facturación son de la CUENTA, y la clave es de una aplicación. Decirlo
+        al revés mandaba a mirar donde no era."""
         estado = self._rechazo(
             monkeypatch, 403, '{"message":"You are not subscribed to this API."}'
         )
-        assert "APLICACIÓN, no de la cuenta" in estado.detail
+        assert "suscripción es de la CUENTA" in estado.detail
+        assert "cada API por separado" in estado.detail
 
     def test_el_401_no_afirma_cual_de_las_dos_cosas_es(self, monkeypatch):
         """Hay proveedores que devuelven 401 para «no suscrito»: afirmar que es
@@ -2539,6 +2542,55 @@ class TestRechazoDeRapidApi:
         estado = self._rechazo(monkeypatch, 401, "{}")
         assert "clave-…1234" in estado.detail
         assert "clave-de-prueba-1234" not in estado.detail
+
+    def test_una_ruta_fuera_del_plan_no_mata_la_fuente(self, monkeypatch):
+        """«This endpoint is disabled for your subscription» dice que la
+        suscripción existe y la clave vale: sólo esa ruta no entra en el plan.
+        Abortar ahí daba la fuente por muerta teniendo rutas sin probar."""
+        import httpx
+
+        from app.config import get_settings
+        import app.sources.rapidapi as rapidapi
+
+        monkeypatch.setenv("RAPIDAPI_KEYS", "rapidapi_idealista17=clave")
+        get_settings.cache_clear()
+        rapidapi._check_cache.clear()
+
+        probadas: list[str] = []
+
+        def responder(self, method, url, **kw):
+            probadas.append(str(url).split("?")[0].rsplit("/", 1)[-1])
+            return httpx.Response(
+                403, text='{"message":"This endpoint is disabled for your subscription"}',
+                headers={"content-type": "application/json"},
+                request=httpx.Request(method, url))
+
+        monkeypatch.setattr(httpx.Client, "request", responder)
+        fuente = next(s for s in rapidapi.iter_rapidapi_sources()
+                      if s.key == "rapidapi_idealista17")
+        estado = fuente.check()
+        get_settings.cache_clear()
+        rapidapi._check_cache.clear()
+
+        # Se prueban todas las rutas candidatas, no sólo la primera.
+        assert len(probadas) == len(fuente.search_paths)
+        assert "fuera del plan" in estado.detail
+
+    def test_reconoce_las_frases_de_plan_insuficiente(self):
+        import httpx
+
+        from app.sources.rapidapi import _endpoint_fuera_del_plan
+
+        def resp(cuerpo):
+            return httpx.Response(
+                403, text=cuerpo, headers={"content-type": "application/json"},
+                request=httpx.Request("GET", "https://x"))
+
+        assert _endpoint_fuera_del_plan(
+            resp('{"message":"This endpoint is disabled for your subscription"}'))
+        # Y no confunde el rechazo de la cuenta con el de la ruta.
+        assert not _endpoint_fuera_del_plan(
+            resp('{"message":"You are not subscribed to this API."}'))
 
     def test_un_404_en_la_ruta_de_salud_no_marca_la_fuente_en_rojo(self):
         """Pocos proveedores tienen ruta de salud. Y si la petición llegó a
