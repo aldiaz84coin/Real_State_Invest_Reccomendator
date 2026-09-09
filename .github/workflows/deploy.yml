@@ -63,7 +63,17 @@ jobs:
         run: |
           if [ -z "${{ secrets.FLY_API_TOKEN }}" ]; then
             echo "listo=false" >> "$GITHUB_OUTPUT"
+            # Un aviso se pierde entre los registros y el workflow sale verde
+            # igual, así que un despliegue omitido parecía uno hecho. Va al
+            # resumen de la ejecución, que se ve sin abrir nada.
             echo "::warning::Falta el secreto FLY_API_TOKEN; se omite el despliegue."
+            {
+              echo "## No se ha desplegado"
+              echo ""
+              echo "Falta el secreto \`FLY_API_TOKEN\`, así que este workflow ha"
+              echo "pasado los tests pero **no ha subido nada a Fly**. Lo que esté"
+              echo "corriendo sigue siendo la versión anterior."
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "listo=true" >> "$GITHUB_OUTPUT"
           fi
@@ -105,7 +115,10 @@ jobs:
         if: steps.check.outputs.listo == 'true'
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: flyctl deploy --remote-only
+        # El commit va dentro de la imagen para que /version pueda decir qué
+        # está corriendo. El panel de Fly ha enseñado metadatos de despliegues
+        # anteriores, y eso costó una ronda entera de dudas.
+        run: flyctl deploy --remote-only --build-arg GIT_SHA=${{ github.sha }}
 
       - name: Asignar IP pública si falta
         if: steps.check.outputs.listo == 'true'
@@ -125,6 +138,24 @@ jobs:
             flyctl ips allocate-v4 --shared -a "$APP"
           fi
           flyctl ips list -a "$APP"
+
+      - name: Comprobar que lo desplegado es este commit
+        if: steps.check.outputs.listo == 'true'
+        env:
+          APP: ${{ steps.cfg.outputs.app }}
+          ESPERADO: ${{ github.sha }}
+        run: |
+          # Se le pregunta a la propia aplicación en vez de fiarse del panel:
+          # la app sabe de qué commit salió su imagen.
+          VISTO=$(curl -sf --retry 5 --retry-delay 3 "https://$APP.fly.dev/version" \
+                  | sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p')
+          echo "Esperado: $ESPERADO"
+          echo "Corriendo: $VISTO"
+          if [ "$VISTO" != "$ESPERADO" ]; then
+            echo "::error::Fly está sirviendo $VISTO y este despliegue era $ESPERADO."
+            exit 1
+          fi
+          echo "✓ La versión desplegada coincide."
 
       - name: Comprobar acceso a las fuentes ya desplegado
         if: steps.check.outputs.listo == 'true'

@@ -151,3 +151,15 @@ def _parse_overrides(raw: str) -> dict[str, str]:
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def deployed_version() -> str:
+    """Commit del que salió la imagen que está corriendo.
+
+    Lo inyecta el Dockerfile al construir. En desarrollo no hay ninguno, y
+    entonces se dice explícitamente en vez de inventar algo: «desconocida» es
+    una respuesta honesta y «main» sería mentira.
+    """
+    import os
+
+    return os.environ.get("GIT_SHA", "").strip() or "desconocida"

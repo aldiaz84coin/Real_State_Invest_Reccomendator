@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.config import DEDICATED_KEY_ENV, get_settings
+from app.config import DEDICATED_KEY_ENV, deployed_version, get_settings
 from app.db import get_db, init_db
 from app.provinces import names as province_names, spellings as province_spellings
 from app.discovery import (
@@ -128,8 +128,26 @@ templates.env.filters["tojson_safe"] = lambda v: json.dumps(v, ensure_ascii=Fals
 
 @app.get("/health", include_in_schema=False)
 def health() -> dict[str, str]:
-    """Sonda de salud para Fly. No toca la red externa a proposito."""
-    return {"status": "ok"}
+    """Sonda de salud para Fly. No toca la red externa a proposito.
+
+    Lleva el commit del que salió la imagen porque el panel de Fly ha llegado a
+    enseñar los metadatos de un despliegue anterior, y sin preguntárselo a la
+    propia aplicación no había forma de saber qué versión estaba corriendo.
+    """
+    return {"status": "ok", "version": deployed_version()}
+
+
+@app.get("/version", tags=["fuentes"])
+def version() -> dict[str, str]:
+    """Commit desplegado, para poder compararlo con el de GitHub."""
+    sha = deployed_version()
+    return {
+        "version": sha,
+        "commit_url": (
+            "https://github.com/aldiaz84coin/Real_State_Invest_Reccomendator/"
+            f"commit/{sha}" if sha != "desconocida" else ""
+        ),
+    }
 
 
 @app.get("/api/sources/health", tags=["fuentes"])

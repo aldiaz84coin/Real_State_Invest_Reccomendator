@@ -14,6 +14,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY scripts ./scripts
 
+# Commit del que sale esta imagen. Se recibe al construir y queda dentro, para
+# que la aplicacion pueda decir que version esta corriendo: el panel de Fly
+# muestra a veces metadatos de un despliegue anterior, y sin esto no habia
+# forma de saber si lo desplegado era lo ultimo.
+ARG GIT_SHA=""
+ENV GIT_SHA=$GIT_SHA
+
 # Punto de montaje del volumen de Fly, donde vive la base SQLite.
 RUN mkdir -p /data
 ENV DATABASE_URL=sqlite:////data/investment.db
