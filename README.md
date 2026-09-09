@@ -74,6 +74,16 @@ curl -X POST "https://<tu-app>.fly.dev/api/ingest/boe-anuncios?province=Cantabri
 desmenuzado de un anuncio concreto: de qué etiqueta sale el precio, qué lotes
 encuentra y por qué descarta cada uno.
 
+Dos detalles del formato real que cuestan la mitad de las fincas si se pasan por
+alto. El primero: las descripciones registrales escriben la superficie en letra
+tan a menudo como en cifras —«de superficie mil doscientos metros cuadrados»—,
+así que se leen las dos formas. El segundo: un edicto judicial lleva
+identificador `SUB-` **y** describe la finca en su texto, de modo que la misma
+parcela salía dos veces, una por el portal y otra por el anuncio, con dos claves
+distintas que no se podían cruzar. Gana la del portal, que trae los datos en
+campos en vez de deducidos de una frase; si el portal no ha respondido, se
+recoge la del anuncio, que es cuando más falta hace.
+
 Las dos fuentes comparten un único recorrido de boletines: pedir dos veces los
 mismos cien anuncios diarios era lo que hacía que el BOE empezara a cortar
 peticiones a mitad de camino. El resumen de cada día distingue ahora los tres

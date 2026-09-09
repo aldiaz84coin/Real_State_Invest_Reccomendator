@@ -10,3 +10,9 @@ data/cache/
 .env
 .pytest_cache/
 .DS_Store
+
+# Diarios de SQLite: son estado local de cada máquina. Estaban en el
+# repositorio, y restaurarlos sobre una base distinta la corrompe.
+*.db-shm
+*.db-wal
+*.db-journal

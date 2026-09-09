@@ -67,8 +67,14 @@ def discover(
     # ahí: pedir dos veces los mismos cien anuncios al día era lo que hacía
     # que el BOE empezara a cortar peticiones a mitad de camino.
     recorrido = _recorrer_boletines(max_results)
-    attempts.append(_from_boe_api(province, max_results, candidates, recorrido))
-    attempts.append(_from_boe_anuncios(province, max_results, candidates, recorrido))
+    del_portal = _from_boe_api(province, max_results, candidates, recorrido)
+    attempts.append(del_portal)
+    attempts.append(
+        _from_boe_anuncios(
+            province, max_results, candidates, recorrido,
+            ya_cubiertos=frozenset(del_portal.get("covered_auctions") or []),
+        )
+    )
 
     # Y detrás el buscador del portal, que no está documentado pero filtra por
     # provincia y no obliga a recorrer boletines día a día.
@@ -241,6 +247,7 @@ def _from_boe_api(
     info["auctions_found"] = len(hallazgo["ids"])
 
     found = 0
+    cubiertas: list[str] = []
     for identificador in hallazgo["ids"]:
         try:
             detail = portal.detail(identificador)
@@ -255,14 +262,19 @@ def _from_boe_api(
         if item:
             item["source_name"] = sumario.name
             out.append(item)
+            cubiertas.append(identificador)
             found += 1
     info["found"] = found
+    # Lo que el portal ya ha resuelto no vuelve a leerse del texto del
+    # anuncio: seria la misma finca dos veces, con dos claves distintas.
+    info["covered_auctions"] = cubiertas
     return info
 
 
 def _from_boe_anuncios(
     province: str | None, max_results: int, out: list[dict[str, Any]],
     recorrido: dict[str, Any] | None = None,
+    ya_cubiertos: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Suelo leído del texto del anuncio, sin pasar por el Portal de Subastas.
 
@@ -285,7 +297,8 @@ def _from_boe_anuncios(
     anuncios = hallazgo.get("announcements") or []
     info["announcements_read"] = len(anuncios)
     resultado = fuente.from_crawl(
-        anuncios, province=province, max_results=max_results
+        anuncios, province=province, max_results=max_results,
+        ya_cubiertos=ya_cubiertos,
     )
     # Los descartes se enseñan porque son la mitad del diagnóstico: saber que
     # se leyeron ochenta anuncios y setenta no eran de suelo es una respuesta,

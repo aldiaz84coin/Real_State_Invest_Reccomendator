@@ -84,6 +84,30 @@ AREA_UNITS: tuple[tuple[str, float], ...] = (
     (r"m2|m²|metros cuadrados|metros\s+cuadrados", 1.0),
 )
 
+# Las descripciones registrales escriben la superficie en letra tan a menudo
+# como en cifras: «de superficie mil doscientos metros cuadrados». Sin esto se
+# perdia entera la finca, que es justo la mitad de los edictos judiciales.
+NUMBER_WORDS: dict[str, int] = {
+    "cero": 0, "un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4,
+    "cinco": 5, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10,
+    "once": 11, "doce": 12, "trece": 13, "catorce": 14, "quince": 15,
+    "dieciseis": 16, "diecisiete": 17, "dieciocho": 18, "diecinueve": 19,
+    "veinte": 20, "veintiun": 21, "veintiuno": 21, "veintiuna": 21,
+    "veintidos": 22, "veintitres": 23, "veinticuatro": 24, "veinticinco": 25,
+    "veintiseis": 26, "veintisiete": 27, "veintiocho": 28, "veintinueve": 29,
+    "treinta": 30, "cuarenta": 40, "cincuenta": 50, "sesenta": 60,
+    "setenta": 70, "ochenta": 80, "noventa": 90,
+    "cien": 100, "ciento": 100, "doscientos": 200, "doscientas": 200,
+    "trescientos": 300, "trescientas": 300, "cuatrocientos": 400,
+    "cuatrocientas": 400, "quinientos": 500, "quinientas": 500,
+    "seiscientos": 600, "seiscientas": 600, "setecientos": 700,
+    "setecientas": 700, "ochocientos": 800, "ochocientas": 800,
+    "novecientos": 900, "novecientas": 900,
+    "mil": 1_000, "millon": 1_000_000, "millones": 1_000_000,
+}
+_PALABRA = "|".join(sorted(NUMBER_WORDS, key=len, reverse=True))
+WORD_NUMBER = rf"(?:{_PALABRA})(?:\s+(?:y\s+)?(?:{_PALABRA}))*"
+
 CADASTRAL_RE = re.compile(r"\b([0-9A-Z]{20})\b")
 MUNICIPALITY_RE = re.compile(
     r"(?:t[eé]rmino municipal de|t[eé]rmino de|sit[oa]s? en|"
@@ -155,7 +179,44 @@ def parse_area(texto: str) -> float | None:
             continue
         if valor > 0 and (mejor is None or match.start() < mejor[0]):
             mejor = (match.start(), valor * factor)
-    return mejor[1] if mejor else None
+    if mejor is not None:
+        return mejor[1]
+
+    # Sin cifras, se prueba con la superficie escrita en letra.
+    for patron, factor in AREA_UNITS:
+        match = re.search(rf"({WORD_NUMBER})\s*(?:{patron})", plano)
+        if not match:
+            continue
+        valor = words_to_number(match.group(1))
+        if valor:
+            return valor * factor
+    return None
+
+
+def words_to_number(texto: str) -> float | None:
+    """Un número escrito en letra, tal y como lo redacta el Registro.
+
+    Sólo se admite lo que hace falta aquí: cardinales hasta millones, que es
+    todo lo que aparece describiendo una superficie. Si aparece una palabra que
+    no se reconoce se devuelve nada, porque un número a medias sería peor que
+    ninguno: falsearía el precio por metro sin avisar.
+    """
+    total = acumulado = 0
+    visto = False
+    for palabra in _normalize(texto).split():
+        if palabra == "y":
+            continue
+        valor = NUMBER_WORDS.get(palabra)
+        if valor is None:
+            return None
+        visto = True
+        if valor >= 1_000:
+            acumulado = (acumulado or 1) * valor
+            total += acumulado
+            acumulado = 0
+        else:
+            acumulado += valor
+    return float(total + acumulado) if visto else None
 
 
 def is_land(texto: str) -> bool:
@@ -366,6 +427,7 @@ class BoeAnunciosSource(BaseSource):
         *,
         province: str | None = None,
         max_results: int = 40,
+        ya_cubiertos: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Candidatas a partir del recorrido de boletines del sumario.
 
@@ -376,13 +438,26 @@ class BoeAnunciosSource(BaseSource):
         El filtro de provincia se aplica aquí y no en la consulta porque el
         Boletín es nacional: no hay forma de pedirle sólo Cantabria, y la
         provincia sale del propio texto del anuncio.
+
+        `ya_cubiertos` son las subastas que el Portal ya ha convertido en
+        candidata. Un edicto judicial lleva identificador `SUB-` y además
+        describe la finca en su texto, así que sin esto la misma parcela salía
+        dos veces en la tabla, con dos claves distintas que no se podían
+        cruzar. Gana la del portal, que trae los datos en campos y no
+        deducidos de una frase. Cuando el portal no ha respondido el conjunto
+        llega vacío y aquí se recoge todo, que es lo que interesa entonces.
         """
         pedida = code_for(province) if province else None
         candidatas: list[dict[str, Any]] = []
         descartes = {"no_es_venta": 0, "no_es_suelo": 0,
-                     "sin_precio_o_superficie": 0, "otra_provincia": 0}
+                     "sin_precio_o_superficie": 0, "otra_provincia": 0,
+                     "ya_estaba_en_el_portal": 0}
 
         for crudo in anuncios:
+            subastas = list(crudo.get("auction_ids") or [])
+            if subastas and all(s in ya_cubiertos for s in subastas):
+                descartes["ya_estaba_en_el_portal"] += 1
+                continue
             anuncio = self._as_announcement(crudo)
             titulo = str(anuncio.get("titulo") or "")
             texto = str(anuncio.get("texto") or "")

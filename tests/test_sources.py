@@ -2317,3 +2317,113 @@ class TestVendedoresPublicosDeSuelo:
         assert estado.ok
         assert "BOE" in estado.detail
         assert estado.extra["discovered_via"] == "boe_anuncios"
+
+
+class TestEdictoJudicial:
+    """El formato del grueso de los anuncios: una finca, descrita en prosa."""
+
+    TEXTO = (
+        "Edicto. La Letrada de la Administración de Justicia del Juzgado de "
+        "Primera Instancia n.º 3 de Santander hago saber: que en la ejecución "
+        "hipotecaria 123/2024 se ha acordado sacar a pública subasta el bien que "
+        "se dirá, en el Portal de Subastas con identificador SUB-JA-2026-123456. "
+        "Cantidad reclamada: 187.432,11 euros. Descripción: Rústica. Terreno en "
+        "el término municipal de Piélagos, de superficie {superficie}. "
+        "Referencia catastral 39052A005001230000XY. Valor de tasación a efectos "
+        "de subasta: 96.000,00 euros."
+    )
+
+    def _candidatas(self, superficie):
+        from app.sources.boe_anuncios import BoeAnunciosSource
+
+        anuncio = {"identificador": "BOE-B-2026-9",
+                   "titulo": "Anuncio de subasta judicial",
+                   "texto": self.TEXTO.format(superficie=superficie)}
+        return BoeAnunciosSource().candidates(anuncio)
+
+    def test_lee_el_edicto_con_la_superficie_en_cifras(self):
+        candidata = self._candidatas("1.200 metros cuadrados")[0]
+        assert candidata["area_m2"] == 1200.0
+        assert candidata["municipality_name"] == "Piélagos"
+        assert candidata["province"] == "Cantabria"
+
+    def test_lee_la_superficie_escrita_en_letra(self):
+        """El Registro la escribe así tan a menudo como en cifras, y sin esto
+        se perdía entera justo la mitad de los edictos judiciales."""
+        assert self._candidatas("mil doscientos metros cuadrados")[0]["area_m2"] == 1200.0
+
+    def test_el_precio_es_la_tasacion_y_no_la_deuda(self):
+        assert self._candidatas("1.200 metros cuadrados")[0]["price_eur"] == 96000.0
+
+
+class TestNumerosEnLetra:
+    """Sólo lo que hace falta para una superficie: cardinales hasta millones."""
+
+    def test_compone_las_decenas_y_los_millares(self):
+        from app.sources.boe_anuncios import words_to_number
+
+        assert words_to_number("mil doscientos") == 1200.0
+        assert words_to_number("novecientos cincuenta") == 950.0
+        assert words_to_number("dos mil quinientos") == 2500.0
+        assert words_to_number("cuarenta y cinco") == 45.0
+
+    def test_una_palabra_desconocida_no_da_un_numero_a_medias(self):
+        """Un número incompleto falsearía el precio por metro sin avisar."""
+        from app.sources.boe_anuncios import words_to_number
+
+        assert words_to_number("la finca sita") is None
+        assert words_to_number("") is None
+
+    def test_las_cifras_mandan_sobre_las_letras(self):
+        from app.sources.boe_anuncios import parse_area
+
+        assert parse_area("de 640 m2, o sea seiscientos cuarenta") == 640.0
+
+
+class TestSinDuplicarLoDelPortal:
+    """Un edicto judicial lleva SUB- y además describe la finca en su texto."""
+
+    ANUNCIO = {
+        "identificador": "BOE-B-2026-9",
+        "titulo": "Anuncio de subasta judicial",
+        "auction_ids": ["SUB-JA-2026-123456"],
+        "texto": ("Subasta con identificador SUB-JA-2026-123456. Terreno en el "
+                  "término municipal de Piélagos de 1.200 metros cuadrados. "
+                  "Valor de tasación: 96.000,00 euros."),
+    }
+
+    def _fuente(self):
+        from app.sources.boe_anuncios import BoeAnunciosSource
+
+        return BoeAnunciosSource()
+
+    def test_si_el_portal_ya_la_trajo_no_se_repite(self):
+        """Saldría la misma parcela dos veces, con dos claves que no se cruzan."""
+        salida = self._fuente().from_crawl(
+            [self.ANUNCIO], ya_cubiertos=frozenset({"SUB-JA-2026-123456"})
+        )
+        assert salida["candidates"] == []
+        assert salida["discarded"]["ya_estaba_en_el_portal"] == 1
+
+    def test_si_el_portal_no_contesto_se_recoge_igual(self):
+        """Es cuando más falta hace: sin el portal, el texto es lo único que hay."""
+        salida = self._fuente().from_crawl([self.ANUNCIO])
+        assert len(salida["candidates"]) == 1
+
+    def test_el_portal_apunta_lo_que_de_verdad_convirtio(self, monkeypatch):
+        """Sólo cuentan las que llegaron a candidata, no las que se intentaron."""
+        import app.discovery as discovery
+        from app.sources.boe import BoeSubastasSource
+
+        detalle = {"id_sub": "SUB-JA-2026-123456",
+                   "url": "https://subastas.boe.es/x", "raw_fields": {},
+                   "asset_type": "solar", "description": "solar de 1.200 m2",
+                   "minimum_bid": "96.000,00 €", "area": "1.200 m2"}
+        monkeypatch.setattr(BoeSubastasSource, "detail", lambda self, i: detalle)
+
+        candidatas: list[dict] = []
+        info = discovery._from_boe_api(
+            None, 10, candidatas,
+            {"ids": ["SUB-JA-2026-123456"], "days": [], "announcements": []},
+        )
+        assert info["covered_auctions"] == ["SUB-JA-2026-123456"]
