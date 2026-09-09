@@ -371,6 +371,19 @@ class FuenteFalsa:
         }
 
 
+class SumarioFalso:
+    """API de sumarios simulada: devuelve los mismos lotes que el portal."""
+
+    key = "boe_sumario"
+    name = "BOE · API de sumarios (datos abiertos)"
+    radius_note = "No usa radio."
+
+    def recent_auction_ids(self, days=14, max_results=40, today=None):
+        return {"ids": [lote["id_sub"] for lote in FuenteFalsa.LOTES],
+                "days": [{"date": "2026-09-08", "published": True,
+                          "auction_announcements": 2, "auction_ids": 2}]}
+
+
 @pytest.fixture
 def fuentes_simuladas(monkeypatch):
     """Sustituye las fuentes reales: sin red, y con resultados predecibles.
@@ -383,6 +396,7 @@ def fuentes_simuladas(monkeypatch):
     from app.sources.osm import NominatimSource
 
     monkeypatch.setattr(discovery, "BoeSubastasSource", FuenteFalsa)
+    monkeypatch.setattr(discovery, "BoeSumarioSource", SumarioFalso)
     monkeypatch.setattr(discovery, "iter_rapidapi_sources", lambda: [])
     monkeypatch.setattr(NominatimSource, "geocode", lambda self, query: None)
 

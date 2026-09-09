@@ -41,6 +41,7 @@ from app.simulation.costs import CostAssumptions
 from app.simulation.siteplan import SitePlanOptions
 from app.sources.base import SourceError
 from app.sources.boe import BoeSubastasSource
+from app.sources.boe_api import BoeSumarioSource
 from app.sources.catastro import CatastroSource
 from app.sources.idealista import IdealistaSource
 from app.sources.images import ReferenceImageSource
@@ -997,6 +998,66 @@ def api_probe_ine_tourism(
         "sample": list(parseado.values())[:4],
         "municipalities_in_db": db.scalar(select(func.count(Municipality.id))) or 0,
     }
+
+
+@app.get("/api/sources/boe-sumario/probe", tags=["fuentes"])
+def api_probe_boe_sumario(
+    fecha: str | None = Query(None, description="AAAAMMDD; por defecto, ayer"),
+    days: int = Query(3, ge=1, le=30),
+) -> dict[str, Any]:
+    """Qué devuelve la API de datos abiertos del BOE, sin adivinar nada.
+
+    Es la vía documentada y sin clave: el buscador del portal no lo es, y por
+    eso hubo que leerle el formulario para acertar con sus parámetros.
+    """
+    from datetime import date as _date, timedelta as _td
+
+    source = BoeSumarioSource()
+    if fecha:
+        try:
+            dia = _date(int(fecha[:4]), int(fecha[4:6]), int(fecha[6:8]))
+        except (ValueError, IndexError):
+            raise HTTPException(422, "La fecha debe ir como AAAAMMDD.") from None
+        try:
+            payload = source.sumario(dia)
+        except SourceError as exc:
+            return {"date": dia.isoformat(), "error": str(exc)}
+        if payload is None:
+            return {"date": dia.isoformat(), "published": False}
+        documentos = list(source.walk_items(payload))
+        anuncios = source.auction_items(payload)
+        return {
+            "date": dia.isoformat(),
+            "published": True,
+            "documents": len(documentos),
+            "auction_announcements": len(anuncios),
+            "sample": anuncios[:5],
+            "first_titles": [str(d.get("titulo", ""))[:120] for d in documentos[:5]],
+        }
+
+    hallazgo = source.recent_auction_ids(days=days, max_results=20,
+                                         today=_date.today() - _td(days=1))
+    return {"days": hallazgo["days"], "auction_ids": hallazgo["ids"]}
+
+
+@app.post("/api/ingest/boe-sumario", tags=["ingesta"])
+def api_ingest_boe_sumario(
+    days: int = Query(14, ge=1, le=60),
+    province: str | None = Query(None),
+    max_results: int = Query(25, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Carga subastas a partir de los boletines de los últimos días."""
+    candidatas: list[dict[str, Any]] = []
+    from app.discovery import _from_boe_api, import_candidates
+
+    info = _from_boe_api(province, max_results, candidatas)
+    if info.get("error"):
+        raise HTTPException(502, info["error"])
+    resumen = import_candidates(db, candidatas) if candidatas else {
+        "created": 0, "updated": 0, "skipped": 0, "analyzed": 0
+    }
+    return {"source": info, "imported": resumen}
 
 
 @app.get("/api/sources/boe/probe", tags=["fuentes"])

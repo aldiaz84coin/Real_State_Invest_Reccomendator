@@ -1935,3 +1935,113 @@ class TestReplicaDelFormularioDelBoe:
         )
         nombres = [n for n, _, _ in BoeSubastasSource().search_attempts("Cantabria")]
         assert "a-mano-get" in nombres and "sin-filtros" in nombres
+
+
+class TestApiDeSumariosDelBoe:
+    """La vía documentada: el buscador del portal no es una API.
+
+    Toda subasta se anuncia en el Boletín antes de celebrarse, así que el
+    sumario diario las trae todas sin depender de adivinar parámetros.
+    """
+
+    SUMARIO = {"data": {"sumario": {"diario": [{"numero": "217", "seccion": [
+        {"codigo": "4", "nombre": "IV. Administración de Justicia",
+         "departamento": [{"nombre": "JUZGADOS DE PRIMERA INSTANCIA",
+                           "epigrafe": [{"nombre": "SANTANDER", "item": [
+                               {"identificador": "BOE-B-2026-1",
+                                "titulo": "Anuncio de subasta de finca rústica en Noja",
+                                "url_xml": "/diario_boe/xml.php?id=BOE-B-2026-1"},
+                               {"identificador": "BOE-B-2026-2",
+                                "titulo": "Edicto de notificación de sentencia"},
+                           ]}]}]},
+        {"codigo": "5", "nombre": "V. Anuncios",
+         "departamento": [{"nombre": "AEAT", "item": [
+             {"identificador": "BOE-B-2026-3",
+              "titulo": "Anuncio de subasta de bienes inmuebles"}]}]},
+    ]}]}}}
+
+    def _source(self):
+        from app.sources.boe_api import BoeSumarioSource
+
+        return BoeSumarioSource()
+
+    def test_encuentra_los_anuncios_de_subasta(self):
+        anuncios = self._source().auction_items(self.SUMARIO)
+        assert [a["identificador"] for a in anuncios] == ["BOE-B-2026-1", "BOE-B-2026-3"]
+
+    def test_deja_fuera_lo_que_no_es_una_subasta(self):
+        titulos = [a["titulo"] for a in self._source().auction_items(self.SUMARIO)]
+        assert not any("Edicto" in t for t in titulos)
+
+    def test_recorre_el_sumario_sin_depender_de_su_anidacion(self):
+        """No todos los boletines traen los mismos niveles: hay días sin
+        epígrafe. Buscar por una ruta fija se rompería con el primero."""
+        plano = {"item": [{"identificador": "BOE-B-2026-9",
+                           "titulo": "Anuncio de subasta notarial"}]}
+        assert len(self._source().auction_items(plano)) == 1
+
+    def test_las_urls_relativas_se_completan(self):
+        anuncio = self._source().auction_items(self.SUMARIO)[0]
+        assert anuncio["url_xml"].startswith("https://www.boe.es/")
+
+    def test_sin_url_en_el_sumario_se_construye(self):
+        anuncio = self._source().auction_items(self.SUMARIO)[1]
+        assert anuncio["url_xml"].endswith("id=BOE-B-2026-3")
+
+    def test_saca_el_numero_de_subasta_del_texto_del_anuncio(self):
+        from app.sources.boe_api import BoeSumarioSource
+
+        texto = ("Se anuncia la subasta con identificador SUB-JA-2026-123456, "
+                 "y en el mismo procedimiento SUB-JA-2026-123457.")
+        assert BoeSumarioSource.auction_ids(texto) == [
+            "SUB-JA-2026-123456", "SUB-JA-2026-123457"
+        ]
+
+    def test_un_dia_sin_boletin_no_es_un_error(self, monkeypatch):
+        """Domingos y festivos no se publica: un 404 ahí es lo normal."""
+        import httpx
+
+        from app.sources.boe_api import BoeSumarioSource
+
+        monkeypatch.setattr(
+            httpx.Client, "request",
+            lambda self, method, url, **kw: httpx.Response(
+                404, request=httpx.Request(method, url)),
+        )
+        from datetime import date
+
+        assert BoeSumarioSource().sumario(date(2026, 9, 6)) is None
+
+    def test_un_dia_roto_no_corta_el_recorrido(self, monkeypatch):
+        import httpx
+
+        from app.sources.boe_api import BoeSumarioSource
+
+        monkeypatch.setattr(
+            httpx.Client, "request",
+            lambda self, method, url, **kw: httpx.Response(
+                500, text="", request=httpx.Request(method, url)),
+        )
+        from datetime import date
+
+        hallazgo = BoeSumarioSource().recent_auction_ids(
+            days=3, today=date(2026, 9, 8))
+        assert len(hallazgo["days"]) == 3
+        assert all("error" in d for d in hallazgo["days"])
+
+
+class TestSinSubastasRepetidas:
+    """La API de sumarios y el portal devuelven los mismos lotes."""
+
+    def test_una_subasta_en_dos_fuentes_sale_una_vez(self):
+        from app.discovery import _sin_repetidas
+
+        lote = {"source": "boe_subastas", "external_id": "SUB-1", "price_eur": 1.0}
+        assert len(_sin_repetidas([lote, dict(lote), {**lote, "external_id": "SUB-2"}])) == 2
+
+    def test_gana_la_fuente_que_se_consulta_antes(self):
+        from app.discovery import _sin_repetidas
+
+        primera = {"source": "boe_subastas", "external_id": "SUB-1", "title": "de la API"}
+        segunda = {"source": "boe_subastas", "external_id": "SUB-1", "title": "del portal"}
+        assert _sin_repetidas([primera, segunda])[0]["title"] == "de la API"

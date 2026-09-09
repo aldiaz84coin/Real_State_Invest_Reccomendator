@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urljoin
 
 from app.provinces import code_for
 from app.sources.base import BaseSource, SourceError, SourceStatus
@@ -141,8 +142,18 @@ class BoeSubastasSource(BaseSource):
         if form:
             del_formulario = search_params_from_form(form, code, max_results)
             if del_formulario:
-                estrategias.append(("formulario-get", "GET", SEARCH_PATH, del_formulario))
-                estrategias.append(("formulario-post", "POST", SEARCH_PATH, del_formulario))
+                # La ruta y el metodo tambien salen del formulario. Enviarlo a
+                # subastas_ava.php devolvia el propio formulario otra vez: esa
+                # pagina pinta el buscador, los resultados estan en su action.
+                destino = form.get("action") or SEARCH_PATH
+                metodo = (form.get("method") or "get").upper()
+                otro = "POST" if metodo == "GET" else "GET"
+                estrategias.append(
+                    (f"formulario-{metodo.lower()}", metodo, destino, del_formulario)
+                )
+                estrategias.append(
+                    (f"formulario-{otro.lower()}", otro, destino, del_formulario)
+                )
 
         # Los nombres de campo salen del formulario real: la provincia va en
         # dato[8], no en dato[2] como se venia mandando.
@@ -201,6 +212,8 @@ class BoeSubastasSource(BaseSource):
                     "cookies": sorted(client.cookies.keys()),
                     "form_fields": len(formulario.get("fields") or {}),
                     "province_slot": province_slot(formulario),
+                    "form_action": formulario.get("action"),
+                    "form_method": formulario.get("method"),
                 }
             except SourceError as exc:
                 calentamiento = {"error": str(exc)[:200]}
@@ -214,10 +227,10 @@ class BoeSubastasSource(BaseSource):
                     "params": {k: str(v) for k, v in params.items()},
                 }
                 envio = {"data": params} if metodo == "POST" else {"params": params}
+                destino = urljoin(f"{self.base_url}/{SEARCH_PATH}", ruta)
+                info["url"] = destino
                 try:
-                    response = self.request(
-                        metodo, f"{self.base_url}/{ruta}", client=client, **envio
-                    )
+                    response = self.request(metodo, destino, client=client, **envio)
                 except SourceError as exc:
                     info["error"] = str(exc)[:300]
                     resultados.append((nombre, [], info))
@@ -233,8 +246,10 @@ class BoeSubastasSource(BaseSource):
                 ids = self.parse_result_ids(response.text)
                 info["link_patterns"] = _count_patterns(response.text)
                 if not ids:
-                    # Sin el cuerpo no hay forma de saber que devolvio el
-                    # portal, y remitir a otro diagnostico seria dar vueltas.
+                    # El encabezado del sitio es identico en todas las paginas,
+                    # asi que el extracto por si solo no distinguia el buscador
+                    # de una pagina de error. Los titulos si.
+                    info["headings"] = _headings(response.text)
                     info["body_excerpt"] = _excerpt(response.text)
                 resultados.append((nombre, ids, info))
                 if ids:
@@ -506,9 +521,22 @@ def _count_patterns(html: str) -> dict[str, int]:
         "detalleSubasta": len(re.findall(r"detalleSubasta", html)),
         "SUB-xx-": len(re.findall(r"SUB-[A-Z]{2}-\d{4}", html)),
         "formulario": len(re.findall(r"<form", html, re.IGNORECASE)),
-        "sin_resultados": len(re.findall(r"no se han encontrado|sin resultados",
-                                         html, re.IGNORECASE)),
+        "sin_resultados": len(re.findall(
+            r"no se han encontrado|sin resultados|ning[uú]n resultado|"
+            r"no hay subastas|no existen subastas|0 resultados",
+            html, re.IGNORECASE)),
     }
+
+
+def _headings(html: str, limit: int = 8) -> list[str]:
+    """Titulos de la pagina: dicen si es el buscador, un listado o un error."""
+    titulos: list[str] = []
+    for etiqueta in re.findall(r"<(?:h[1-4]|title)[^>]*>(.*?)</(?:h[1-4]|title)>",
+                               html, flags=re.DOTALL | re.IGNORECASE):
+        texto = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", etiqueta)).strip()
+        if texto and texto not in titulos:
+            titulos.append(texto[:120])
+    return titulos[:limit]
 
 
 def _excerpt(html: str, limit: int = 1200) -> str:

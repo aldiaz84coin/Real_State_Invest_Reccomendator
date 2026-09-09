@@ -23,6 +23,7 @@ from app.logging_setup import log_operation
 from app.models import Listing, Municipality
 from app.sources.base import SourceError
 from app.sources.boe import BoeSubastasSource
+from app.sources.boe_api import BoeSumarioSource
 from app.sources.idealista import IdealistaSource
 from app.sources.rapidapi import iter_rapidapi_sources
 
@@ -59,9 +60,12 @@ def discover(
     candidates: list[dict[str, Any]] = []
     attempts: list[dict[str, Any]] = []
 
-    # Las Subastas del BOE van primero: es la única gratuita y sin clave, y
-    # sus lotes son justo el perfil que busca la aplicación. Filtran por
-    # provincia, no por radio, así que se consultan siempre.
+    # La API de datos abiertos del BOE va primero: es la vía documentada y sin
+    # clave, y toda subasta pasa por el Boletín antes de existir en el portal.
+    attempts.append(_from_boe_api(province, max_results, candidates))
+
+    # Y detrás el buscador del portal, que no está documentado pero filtra por
+    # provincia y no obliga a recorrer boletines día a día.
     attempts.append(_from_boe(province, lat, lon, max_results, candidates))
 
     if lat is not None and lon is not None:
@@ -85,8 +89,9 @@ def discover(
         candidate["token"] = _token(candidate)
         candidate["already_saved"] = _exists(db, candidate)
 
-    filtered = [c for c in candidates
-                if _passes(c, min_area_m2, max_area_m2, max_price_eur)]
+    filtered = _sin_repetidas(
+        [c for c in candidates if _passes(c, min_area_m2, max_area_m2, max_price_eur)]
+    )
     # Lo más barato por metro primero: es el criterio de la aplicación.
     filtered.sort(key=lambda c: c.get("price_eur_m2") or 0.0)
 
@@ -97,6 +102,21 @@ def discover(
         "attempts": attempts,
         "sources_ok": sum(1 for a in attempts if a.get("found")),
     }
+
+
+def _sin_repetidas(candidatas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Una misma subasta la encuentran varias fuentes.
+
+    La API de sumarios y el buscador del portal devuelven los mismos lotes, y
+    sin esto salían duplicados en la tabla y se importaban dos veces. Gana la
+    primera, que viene de la fuente más fiable porque es la que se consulta
+    antes.
+    """
+    unicas: dict[tuple[str, str], dict[str, Any]] = {}
+    for candidata in candidatas:
+        clave = (str(candidata.get("source")), str(candidata.get("external_id")))
+        unicas.setdefault(clave, candidata)
+    return list(unicas.values())
 
 
 def _passes(
@@ -150,6 +170,9 @@ def _from_boe(
          "cookies": detalle.get("cookies"),
          "form_fields": detalle.get("form_fields"),
          "province_slot": detalle.get("province_slot"),
+         "form_action": detalle.get("form_action"),
+         "url": detalle.get("url"),
+         "headings": detalle.get("headings"),
          "patterns": detalle.get("link_patterns"),
          "excerpt": detalle.get("body_excerpt"),
          "error": detalle.get("error")}
@@ -177,6 +200,54 @@ def _from_boe(
             found += 1
     info["found"] = found
     return info
+
+
+def _from_boe_api(
+    province: str | None, max_results: int, out: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Subastas anunciadas en el Boletín, por la API de datos abiertos."""
+    sumario = BoeSumarioSource()
+    portal = BoeSubastasSource()
+    info: dict[str, Any] = {
+        "source": sumario.key,
+        "name": sumario.name,
+        "radius_note": getattr(sumario, "radius_note", ""),
+        "scope": f"provincia {province}" if province else "toda España",
+    }
+    try:
+        hallazgo = sumario.recent_auction_ids(max_results=min(max_results, 25))
+    except SourceError as exc:
+        info["error"] = str(exc)[:250]
+        return info
+
+    info["days"] = hallazgo["days"]
+    info["auctions_found"] = len(hallazgo["ids"])
+
+    found = 0
+    for identificador in hallazgo["ids"]:
+        try:
+            detail = portal.detail(identificador)
+        except SourceError:
+            continue
+        if not portal.is_land(detail):
+            continue
+        # El Boletín no filtra por provincia; la ficha del portal sí la trae.
+        if province and not _misma_provincia(detail.get("province", ""), province):
+            continue
+        item = portal.normalize(detail)
+        if item:
+            item["source_name"] = sumario.name
+            out.append(item)
+            found += 1
+    info["found"] = found
+    return info
+
+
+def _misma_provincia(de_la_ficha: str, pedida: str) -> bool:
+    from app.provinces import code_for
+
+    codigo = code_for(pedida)
+    return codigo is not None and code_for(de_la_ficha) == codigo
 
 
 def _from_listings_source(

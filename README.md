@@ -26,7 +26,27 @@ Esta fue la primera comprobación del proyecto y condiciona todo lo demás.
 | **AirROI** | Sí, de pago | Complemento opcional de pago por uso. |
 | **AirDNA** | Descartado | Su API sólo se comercializa con contrato *enterprise* (del orden de 50.000 $/año). |
 
-### Subastas del BOE: la alternativa gratuita que sí funciona
+### Subastas del BOE: por la API documentada, no raspando el buscador
+
+El buscador de `subastas.boe.es` **no es una API**: no está documentado, sus
+parámetros hay que deducirlos leyendo el formulario, y devolvía siempre la
+misma página aunque el HTTP fuera 200. La Agencia Estatal BOE sí publica una
+[API de datos abiertos](https://www.boe.es/datosabiertos/api/api.php),
+documentada, sin clave y sin cuota, y por ahí pasa toda subasta: para
+celebrarse tiene que anunciarse antes en el Boletín.
+
+- Las **judiciales** se publican en la sección IV (Administración de Justicia).
+- Las **administrativas** —Agencia Tributaria, Seguridad Social, ayuntamientos—
+  en la sección V (Anuncios).
+
+`GET /datosabiertos/api/boe/sumario/AAAAMMDD` devuelve el sumario del día. De
+cada anuncio de subasta se saca el identificador (`SUB-JA-2026-…`) y con él la
+ficha estructurada del portal, que sí es una página estable: **el
+descubrimiento va por la vía documentada y sólo el detalle depende del
+portal**. El buscador del portal se conserva detrás como atajo, porque filtra
+por provincia sin recorrer boletines día a día.
+
+### El buscador del portal, como respaldo
 
 Ningún portal privado ofrece lectura gratuita, pero el **Portal de Subastas del
 BOE** sí: inmuebles y fincas de subastas judiciales, notariales y de Hacienda,

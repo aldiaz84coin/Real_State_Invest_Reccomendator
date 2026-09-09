@@ -155,6 +155,15 @@
               {%- elif a.skipped %}<span class="badge mute">no consultada</span> {{ a.skipped }}
               {%- else %}correcto{% endif %}
               {%- if a.radius_note %}<br>{{ a.radius_note }}{% endif %}
+              {%- if a.days %}
+              <br>Boletines recorridos:
+              {% for d in a.days %}<code>{{ d.date }}</code>
+                {%- if d.error %} · {{ d.error }}
+                {%- elif not d.published %} · sin boletín
+                {%- else %} · {{ d.auction_announcements }} anuncios de subasta,
+                  {{ d.auction_ids }} identificadas{% endif %}{{ '; ' if not loop.last }}
+              {% endfor %}
+              {%- endif %}
               {%- if a.strategies %}
               <br>Búsquedas probadas en el portal:
               <ul style="margin:6px 0 0 16px">
@@ -167,7 +176,10 @@
                   {%- if e.cookies %} · cookies: {{ e.cookies | join(', ') }}{% endif %}
                   {%- if e.form_fields %} · {{ e.form_fields }} campos leídos del formulario
                     {%- if e.province_slot %}, provincia en <code>{{ e.province_slot }}</code>{% endif %}
+                    {%- if e.form_action %}, envía a <code>{{ e.form_action }}</code>{% endif %}
                   {%- endif %}
+                  {%- if e.url %}<br><span class="note">{{ e.url }}</span>{% endif %}
+                  {%- if e.headings %}<br><span class="note">títulos: {{ e.headings | join(' · ') }}</span>{% endif %}
                   {%- if e.error %} · {{ e.error }}{% endif %}
                   {%- if e.patterns %}
                   <br><span class="note">enlaces: {% for k, v in e.patterns.items() %}{{ k }}={{ v }}{{ ' · ' if not loop.last }}{% endfor %}</span>
