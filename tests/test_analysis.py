@@ -284,3 +284,16 @@ class TestMigracionDeColumnas:
         finally:
             capa.engine.dispose()
             capa.engine = motor_original
+
+
+class TestElGuardaDeRed:
+    """El propio guarda tiene que funcionar, o no protege de nada."""
+
+    def test_una_llamada_a_internet_falla_el_test(self):
+        import httpx
+        import pytest as _pytest
+
+        from tests.conftest import SalidaDeRedProhibida
+
+        with _pytest.raises(SalidaDeRedProhibida):
+            httpx.Client(timeout=1).get("https://subastas.boe.es/")
