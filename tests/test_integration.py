@@ -373,11 +373,18 @@ class FuenteFalsa:
 
 @pytest.fixture
 def fuentes_simuladas(monkeypatch):
-    """Sustituye las fuentes reales: sin red, y con resultados predecibles."""
+    """Sustituye las fuentes reales: sin red, y con resultados predecibles.
+
+    Nominatim entra aquí también. Sin él, este entorno lo bloquea y los tests
+    pasaban, pero en CI responde de verdad: la geocodificación de «Cantabria»
+    acababa cambiando el resultado de un test que no iba de eso.
+    """
     from app import discovery
+    from app.sources.osm import NominatimSource
 
     monkeypatch.setattr(discovery, "BoeSubastasSource", FuenteFalsa)
     monkeypatch.setattr(discovery, "iter_rapidapi_sources", lambda: [])
+    monkeypatch.setattr(NominatimSource, "geocode", lambda self, query: None)
 
     class IdealistaMudo:
         key = "idealista"
@@ -482,7 +489,9 @@ class TestDescubrimientoWeb:
         pasos = re.findall(r'<input type="number"[^>]*step="([^"]+)"', html)
         assert pasos and all(p == "any" for p in pasos)
 
-    def test_el_municipio_se_situa_sin_tener_la_base_cargada(self, client, fuentes_simuladas, monkeypatch):
+    def test_el_municipio_se_situa_sin_tener_la_base_cargada(
+        self, client, fuentes_simuladas, monkeypatch
+    ):
         """Escribir «Noja» no hacía nada: el municipio se buscaba sólo en la
         base, y con la base vacía —que es cuando se usa esto— nunca estaba."""
         from app.sources.osm import NominatimSource
@@ -497,10 +506,7 @@ class TestDescubrimientoWeb:
         assert "Nominatim" in respuesta.text
         assert "43.4869" in respuesta.text
 
-    def test_si_no_se_situa_el_municipio_lo_dice(self, client, fuentes_simuladas, monkeypatch):
-        from app.sources.osm import NominatimSource
-
-        monkeypatch.setattr(NominatimSource, "geocode", lambda self, query: None)
+    def test_si_no_se_situa_el_municipio_lo_dice(self, client, fuentes_simuladas):
         respuesta = client.post("/buscar/descubrir", data={"q": "Sitio inexistente"})
         assert "No se ha podido situar" in respuesta.text
         # Y aun así se han consultado las fuentes que sí filtran por provincia.
