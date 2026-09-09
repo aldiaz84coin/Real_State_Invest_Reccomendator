@@ -28,7 +28,16 @@ class Settings(BaseSettings):
     # aviso y no deben requerir tocar codigo.
     # RapidAPI entrega una clave por aplicacion, y lo habitual es crear una por
     # API suscrita. Por eso hay clave global y ademas clave por fuente.
-    rapidapi_key: str = ""     # respaldo comun si no hay una especifica
+    # Una variable por fuente. Es la forma recomendada: un secreto de Fly por
+    # API, con su nombre, y se acabaron las listas separadas por comas donde un
+    # espacio de mas deja la fuente sin clave y no se entera nadie.
+    idealista17_key: str = ""      # -> rapidapi_idealista17
+    idealista_api1_key: str = ""   # -> rapidapi_idealista
+    fotocasa_key: str = ""         # -> rapidapi_fotocasa
+
+    rapidapi_key: str = ""     # respaldo comun para las que no tengan la suya
+    # Formato antiguo, se mantiene por compatibilidad y va el ultimo. Era el
+    # que hacia que cada fuente usara una clave distinta sin que se viera.
     rapidapi_keys: str = ""    # "clave_fuente=API_KEY,clave_fuente=API_KEY"
     rapidapi_hosts: str = ""   # "clave_fuente=host"
     rapidapi_paths: str = ""   # "clave_fuente=/ruta"
@@ -76,9 +85,32 @@ class Settings(BaseSettings):
     def rapidapi_configured(self) -> bool:
         return bool(self.rapidapi_key or self.rapidapi_keys)
 
+    def rapidapi_key_with_origin(self, source_key: str) -> tuple[str, str]:
+        """Clave de esa API y **de qué variable** ha salido.
+
+        Devuelve el origen porque no saberlo costó dos rondas de depuración: el
+        panel enseñaba una huella distinta por fuente y no había forma de ver
+        que venía de una lista que pisaba a la variable global.
+
+        El orden es de lo más concreto a lo más general: la variable propia de
+        la fuente manda, después la global, y de últimas el formato antiguo de
+        lista, que se conserva sólo para no romper despliegues existentes.
+        """
+        propia = DEDICATED_KEY_ENV.get(source_key)
+        if propia:
+            valor = str(getattr(self, propia.lower(), "") or "")
+            if valor:
+                return valor, propia
+        if self.rapidapi_key:
+            return self.rapidapi_key, "RAPIDAPI_KEY"
+        de_la_lista = _parse_overrides(self.rapidapi_keys).get(source_key)
+        if de_la_lista:
+            return de_la_lista, f"RAPIDAPI_KEYS[{source_key}]"
+        return "", ""
+
     def rapidapi_key_for(self, source_key: str) -> str:
-        """Clave especifica de esa API, o la global si no hay una propia."""
-        return _parse_overrides(self.rapidapi_keys).get(source_key) or self.rapidapi_key
+        """Clave que se usará con esa API."""
+        return self.rapidapi_key_with_origin(source_key)[0]
 
     def prefab_image_url(self, model_id: str) -> str | None:
         return _parse_overrides(self.prefab_images).get(model_id)
@@ -92,6 +124,15 @@ class Settings(BaseSettings):
     def rapidapi_param_for(self, source_key: str, param: str) -> str | None:
         """Valor de un parámetro concreto de una fuente, si se ha fijado."""
         return _parse_overrides(self.rapidapi_params).get(f"{source_key}.{param}")
+
+
+# Nombre de la variable propia de cada fuente. Se declara aparte para que el
+# panel pueda decir cual hay que tocar sin que haya que adivinarlo.
+DEDICATED_KEY_ENV: dict[str, str] = {
+    "rapidapi_idealista17": "IDEALISTA17_KEY",
+    "rapidapi_idealista": "IDEALISTA_API1_KEY",
+    "rapidapi_fotocasa": "FOTOCASA_KEY",
+}
 
 
 def _parse_overrides(raw: str) -> dict[str, str]:

@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
+from app.config import DEDICATED_KEY_ENV, get_settings
 from app.db import get_db, init_db
 from app.provinces import names as province_names, spellings as province_spellings
 from app.discovery import (
@@ -1476,6 +1476,8 @@ def page_debug_rapidapi(request: Request) -> HTMLResponse:
             "host_por_defecto": type(fuente).host,
             "host_sobrescrito": fuente.host != type(fuente).host,
             "key_fingerprint": fuente.key_fingerprint(fuente.api_key),
+            "key_origin": fuente.key_origin,
+            "key_env": DEDICATED_KEY_ENV.get(fuente.key, ""),
             "rutas": list(fuente.search_paths),
         })
 
@@ -1517,9 +1519,13 @@ def page_debug_rapidapi(request: Request) -> HTMLResponse:
             },
         },
     }
+    # Si la lista antigua sigue puesta conviene decirlo: es de menor prioridad
+    # que las variables propias, pero tenerla ahí invita a volver a mirarla.
+    lista_antigua = bool(get_settings().rapidapi_keys)
     return templates.TemplateResponse(
         "debug_rapidapi.html",
-        {"request": request, "fuentes": fuentes, "presets": presets},
+        {"request": request, "fuentes": fuentes, "presets": presets,
+         "lista_antigua": lista_antigua},
     )
 
 

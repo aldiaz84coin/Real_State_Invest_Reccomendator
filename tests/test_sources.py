@@ -529,17 +529,25 @@ class TestIdealista17:
             assert inventado not in params
 
     def test_clave_propia_por_fuente(self, monkeypatch):
-        """RapidAPI da una clave por aplicación y suele haber una por API."""
+        """Cada API tiene su variable, y es la que manda.
+
+        El orden se ha invertido a propósito respecto de cómo estaba: antes la
+        lista `RAPIDAPI_KEYS` pisaba a la variable global, y eso hizo que cada
+        fuente mandara una clave distinta sin que se viera en ninguna parte.
+        Ahora manda la variable propia de la fuente, después la global, y la
+        lista queda la última, sólo para no romper despliegues que la usen.
+        """
         from app.config import get_settings
 
-        monkeypatch.setenv("RAPIDAPI_KEYS", "rapidapi_idealista17=clave-17")
+        monkeypatch.setenv("IDEALISTA17_KEY", "clave-propia")
         monkeypatch.setenv("RAPIDAPI_KEY", "clave-global")
+        monkeypatch.setenv("RAPIDAPI_KEYS", "rapidapi_idealista17=clave-vieja")
         get_settings.cache_clear()
         try:
             from app.sources.rapidapi import RapidApiFotocasaSource
 
-            assert self._source().api_key == "clave-17"
-            # Sin clave propia, cae a la global.
+            assert self._source().api_key == "clave-propia"
+            # Sin variable propia, la global; nunca la lista antigua.
             assert RapidApiFotocasaSource().api_key == "clave-global"
         finally:
             get_settings.cache_clear()
@@ -3121,3 +3129,54 @@ class TestDescartesDelPortal:
         info = discovery._from_boe(None, None, None, 10, [])
         assert info["discarded"]["ficha_ilegible"] == 1
         assert "caída" in info["last_error"]
+
+
+class TestDeQueSecretoSaleLaClave:
+    """No saberlo costó dos rondas de depuración.
+
+    El panel enseñaba una huella distinta por fuente y no había forma de ver
+    que salían de una lista antigua que pisaba a la variable global.
+    """
+
+    def _origen(self, monkeypatch, fuente="rapidapi_idealista17", **entorno):
+        from app.config import get_settings
+
+        for nombre in ("IDEALISTA17_KEY", "IDEALISTA_API1_KEY", "FOTOCASA_KEY",
+                       "RAPIDAPI_KEY", "RAPIDAPI_KEYS"):
+            monkeypatch.delenv(nombre, raising=False)
+        for nombre, valor in entorno.items():
+            monkeypatch.setenv(nombre, valor)
+        get_settings.cache_clear()
+        resultado = get_settings().rapidapi_key_with_origin(fuente)
+        get_settings.cache_clear()
+        return resultado
+
+    def test_manda_la_variable_propia_de_la_fuente(self, monkeypatch):
+        clave, origen = self._origen(
+            monkeypatch, IDEALISTA17_KEY="propia", RAPIDAPI_KEY="global",
+            RAPIDAPI_KEYS="rapidapi_idealista17=vieja")
+        assert (clave, origen) == ("propia", "IDEALISTA17_KEY")
+
+    def test_sin_la_propia_manda_la_global(self, monkeypatch):
+        clave, origen = self._origen(
+            monkeypatch, RAPIDAPI_KEY="global",
+            RAPIDAPI_KEYS="rapidapi_idealista17=vieja")
+        assert (clave, origen) == ("global", "RAPIDAPI_KEY")
+
+    def test_la_lista_antigua_queda_la_ultima(self, monkeypatch):
+        """Se conserva para no romper despliegues, pero ya no pisa a nadie."""
+        clave, origen = self._origen(
+            monkeypatch, RAPIDAPI_KEYS="rapidapi_idealista17=vieja")
+        assert clave == "vieja"
+        assert "RAPIDAPI_KEYS" in origen
+
+    def test_sin_ninguna_no_hay_clave_ni_origen(self, monkeypatch):
+        assert self._origen(monkeypatch) == ("", "")
+
+    def test_cada_fuente_tiene_su_variable_declarada(self):
+        """El panel las nombra para no tener que adivinar cuál hay que tocar."""
+        from app.config import DEDICATED_KEY_ENV
+        from app.sources.rapidapi import iter_rapidapi_sources
+
+        assert set(DEDICATED_KEY_ENV) == {s.key for s in iter_rapidapi_sources()}
+        assert DEDICATED_KEY_ENV["rapidapi_idealista17"] == "IDEALISTA17_KEY"
