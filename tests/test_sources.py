@@ -3067,3 +3067,57 @@ class TestQueSeEnvioDeVerdad:
             fuente="rapidapi_idealista17")
         assert "clave-…1234" in estado.detail
         assert "fuera del plan" in estado.detail
+
+
+class TestDescartesDelPortal:
+    """«20 subastas encontradas, 0 candidatas» tampoco decía nada.
+
+    Es el mismo patrón que dejó el descubrimiento a cero durante toda una
+    sesión: atrapar el fallo y seguir, sin contar por qué. Aquí quedaban los
+    dos últimos sitios donde seguía vivo.
+    """
+
+    IDS = {"ids": ["SUB-JA-2026-1", "SUB-JA-2026-2"], "days": [], "announcements": []}
+
+    def test_cuenta_las_fichas_que_no_se_pudieron_leer(self, monkeypatch):
+        import app.discovery as discovery
+        from app.sources.base import SourceError
+        from app.sources.boe import BoeSubastasSource
+
+        def revienta(self, identificador):
+            raise SourceError("Subastas del BOE: HTTP 503")
+
+        monkeypatch.setattr(BoeSubastasSource, "detail", revienta)
+        info = discovery._from_boe_api(None, 10, [], dict(self.IDS))
+        assert info["found"] == 0
+        assert info["discarded"]["ficha_ilegible"] == 2
+        assert "HTTP 503" in info["last_error"]
+
+    def test_distingue_no_ser_suelo_de_faltarle_el_precio(self, monkeypatch):
+        import app.discovery as discovery
+        from app.sources.boe import BoeSubastasSource
+
+        fichas = {
+            "SUB-JA-2026-1": {"id_sub": "SUB-JA-2026-1", "url": "u", "raw_fields": {},
+                              "asset_type": "vivienda", "description": "piso"},
+            "SUB-JA-2026-2": {"id_sub": "SUB-JA-2026-2", "url": "u", "raw_fields": {},
+                              "asset_type": "solar", "description": "solar sin precio"},
+        }
+        monkeypatch.setattr(BoeSubastasSource, "detail",
+                            lambda self, i: fichas[i])
+        info = discovery._from_boe_api(None, 10, [], dict(self.IDS))
+        assert info["discarded"]["no_es_suelo"] == 1
+        assert info["discarded"]["sin_precio_o_superficie"] == 1
+
+    def test_el_buscador_del_portal_tambien_los_cuenta(self, monkeypatch):
+        import app.discovery as discovery
+        from app.sources.base import SourceError
+        from app.sources.boe import BoeSubastasSource
+
+        monkeypatch.setattr(BoeSubastasSource, "search_attempts",
+                            lambda self, prov, maxr: [("x", ["SUB-JA-2026-1"], {})])
+        monkeypatch.setattr(BoeSubastasSource, "detail",
+                            lambda self, i: (_ for _ in ()).throw(SourceError("caída")))
+        info = discovery._from_boe(None, None, None, 10, [])
+        assert info["discarded"]["ficha_ilegible"] == 1
+        assert "caída" in info["last_error"]

@@ -188,6 +188,9 @@
               {%- if a.announcements_read is defined %}
               <br>{{ a.announcements_read }} anuncios leídos del Boletín.
               {%- endif %}
+              {%- if a.last_error %}
+              <br><span class="note">último fallo: {{ a.last_error }}</span>
+              {%- endif %}
               {%- if a.discarded %}
               <br><span class="note">descartados:
                 {% for k, v in a.discarded.items() %}{{ k|replace('_', ' ') }} {{ v }}{{ ' · ' if not loop.last }}{% endfor %}</span>

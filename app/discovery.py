@@ -200,19 +200,31 @@ def _from_boe(
     info["auctions_found"] = len(identifiers)
 
     found = 0
+    descartes = {"ficha_ilegible": 0, "no_es_suelo": 0, "sin_precio_o_superficie": 0}
+    ultimo_fallo = ""
     for identifier in identifiers:
         try:
             detail = source.detail(identifier)
-        except SourceError:
+        except SourceError as exc:
+            descartes["ficha_ilegible"] += 1
+            ultimo_fallo = str(exc)[:160]
             continue
         if not source.is_land(detail):
+            descartes["no_es_suelo"] += 1
             continue
         item = source.normalize(detail)
-        if item:
-            item["source_name"] = source.name
-            out.append(item)
-            found += 1
+        if not item:
+            descartes["sin_precio_o_superficie"] += 1
+            continue
+        item["source_name"] = source.name
+        out.append(item)
+        found += 1
     info["found"] = found
+    # Sin esto, «20 subastas encontradas, 0 candidatas» no decía si el portal
+    # no servía las fichas, si ninguna era de suelo o si les faltaba el precio.
+    info["discarded"] = descartes
+    if ultimo_fallo:
+        info["last_error"] = ultimo_fallo
     return info
 
 
@@ -248,23 +260,35 @@ def _from_boe_api(
 
     found = 0
     cubiertas: list[str] = []
+    descartes = {"ficha_ilegible": 0, "no_es_suelo": 0,
+                 "otra_provincia": 0, "sin_precio_o_superficie": 0}
+    ultimo_fallo = ""
     for identificador in hallazgo["ids"]:
         try:
             detail = portal.detail(identificador)
-        except SourceError:
+        except SourceError as exc:
+            descartes["ficha_ilegible"] += 1
+            ultimo_fallo = str(exc)[:160]
             continue
         if not portal.is_land(detail):
+            descartes["no_es_suelo"] += 1
             continue
         # El Boletín no filtra por provincia; la ficha del portal sí la trae.
         if province and not _misma_provincia(detail.get("province", ""), province):
+            descartes["otra_provincia"] += 1
             continue
         item = portal.normalize(detail)
-        if item:
-            item["source_name"] = sumario.name
-            out.append(item)
-            cubiertas.append(identificador)
-            found += 1
+        if not item:
+            descartes["sin_precio_o_superficie"] += 1
+            continue
+        item["source_name"] = sumario.name
+        out.append(item)
+        cubiertas.append(identificador)
+        found += 1
     info["found"] = found
+    info["discarded"] = descartes
+    if ultimo_fallo:
+        info["last_error"] = ultimo_fallo
     # Lo que el portal ya ha resuelto no vuelve a leerse del texto del
     # anuncio: seria la misma finca dos veces, con dos claves distintas.
     info["covered_auctions"] = cubiertas
