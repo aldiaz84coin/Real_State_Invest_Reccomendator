@@ -140,12 +140,14 @@ class RapidApiSource(BaseSource):
                 f"https://rapidapi.com/developer/apps.{coletilla}"
             )
         return (
-            f"{self.name}: HTTP 403, la clave vale pero esa aplicación no está "
-            f"suscrita a {self.host}. En RapidAPI la suscripción es de la "
-            "APLICACIÓN, no de la cuenta: estar suscrito con otra app del mismo "
-            "usuario no sirve, y hay que suscribir cada API por separado aunque "
-            f"sea al plan gratuito. Entra en {self.docs_url}, pulsa «Subscribe "
-            f"to Test» y elige Basic con la app de la clave {huella}.{coletilla}"
+            f"{self.name}: HTTP 403, la clave vale pero no hay suscripción a "
+            f"{self.host}. En RapidAPI la suscripción es de la CUENTA y hay que "
+            "contratar cada API por separado, aunque sea el plan gratuito: "
+            "estar suscrito a otra API de la misma cuenta no sirve. La clave, "
+            "en cambio, es de una aplicación concreta, así que comprueba también "
+            f"que {huella} es de una app de la cuenta que tiene la suscripción. "
+            f"Entra en {self.docs_url} y pulsa «Subscribe to Test» (plan "
+            f"Basic).{coletilla}"
         )
 
     def headers(self) -> dict[str, str]:
@@ -243,6 +245,16 @@ class RapidApiSource(BaseSource):
             if response.status_code == 429:
                 raise SourceError(f"{self.name}: cuota de RapidAPI agotada (HTTP 429).")
             if response.status_code in (401, 403):
+                if _endpoint_fuera_del_plan(response):
+                    # «This endpoint is disabled for your subscription»: la
+                    # suscripcion existe y la clave vale, lo que pasa es que el
+                    # plan no incluye ESTA ruta. Abortar aqui daba la fuente
+                    # por muerta teniendo otras rutas candidatas sin probar,
+                    # que es justo para lo que estan.
+                    errors.append(
+                        f"{path} -> fuera del plan (HTTP {response.status_code})"
+                    )
+                    continue
                 raise SourceError(self._explicar_rechazo(response))
             if response.status_code in (404, 400):
                 errors.append(f"{path} -> HTTP {response.status_code}")
@@ -906,6 +918,33 @@ def _resolve_separator(text: str, separator: str) -> str:
 # Cada comprobacion contra RapidAPI cuesta una peticion del plan contratado, y
 # el panel sondea todas las fuentes en cada carga. Sin cache, unas pocas
 # visitas al dia agotarian un plan gratuito de 500 al mes solo comprobando.
+# Frases con las que RapidAPI y sus proveedores dicen «tu plan no llega a esta
+# ruta», que no es lo mismo que «no estas suscrito» ni que «la clave no vale».
+FUERA_DEL_PLAN = (
+    "endpoint is disabled",
+    "endpoint is not available",
+    "not included in your",
+    "upgrade your plan",
+    "not allowed for your subscription",
+    "disabled for your subscription",
+)
+
+
+def _endpoint_fuera_del_plan(response: Any) -> bool:
+    """¿El rechazo es de esta ruta concreta, y no de la clave ni de la cuenta?
+
+    Se mira el texto porque el codigo HTTP no lo distingue: los proveedores
+    usan 401 y 403 indistintamente para las tres cosas.
+    """
+    try:
+        cuerpo = response.json()
+        texto = str(cuerpo.get("message") or cuerpo.get("error") or "")
+    except Exception:
+        texto = str(getattr(response, "text", ""))
+    texto = texto.lower()
+    return any(frase in texto for frase in FUERA_DEL_PLAN)
+
+
 CHECK_CACHE_SECONDS = 900
 _check_cache: dict[str, tuple[float, SourceStatus]] = {}
 
