@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% set active = 'sources' %}
+{% block title %}Consola de RapidAPI{% endblock %}
+{% block content %}
+<h1>Consola de RapidAPI</h1>
+<p class="note" style="max-width:78ch">
+  Lanza peticiones reales al proveedor desde este servidor y enseña lo que
+  contesta, sin tocar código ni volver a desplegar. Estos revendedores no
+  documentan bien sus parámetros y contestan «Invalid request parameters» sin
+  decir cuál: la única forma de acertar es probar y leer la respuesta entera.
+</p>
+
+<div class="card section">
+  <h2>Estado de cada fuente</h2>
+  <table>
+    <thead><tr>
+      <th>Fuente</th><th>Host en uso</th><th>Clave enviada</th><th>Rutas que prueba</th>
+    </tr></thead>
+    <tbody>
+      {% for f in fuentes %}
+      <tr>
+        <td><code>{{ f.key }}</code><br><span class="note">{{ f.name }}</span></td>
+        <td><code>{{ f.host }}</code>
+          {%- if f.host_sobrescrito %}<br><span class="badge warn">sobrescrito</span>
+          <span class="note">por defecto {{ f.host_por_defecto }}</span>{% endif %}</td>
+        {# La huella es lo que permite ver de un vistazo que el servidor usa una
+           clave distinta de la que uno prueba a mano, que ha pasado. #}
+        <td><code>{{ f.key_fingerprint }}</code></td>
+        <td>{% for r in f.rutas %}<code>{{ r }}</code>{{ ' · ' if not loop.last }}{% endfor %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card section">
+  <h2>Probar una petición</h2>
+  <form id="consola" onsubmit="return false">
+    <div class="grid cols-2">
+      <label>Fuente
+        <select id="fuente">
+          {% for f in fuentes %}<option value="{{ f.key }}">{{ f.key }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Ruta
+        <input id="ruta" type="text" value="/property-search-by-coordinates">
+      </label>
+    </div>
+    <label>Parámetros — uno por línea, <code>nombre=valor</code>
+      <textarea id="params" rows="9"></textarea>
+    </label>
+    <p class="note">
+      Atajos:
+      {% for nombre, preset in presets.items() %}
+      <button type="button" class="secondary" onclick='rellenar({{ preset | tojson }})'>{{ nombre }}</button>
+      {% endfor %}
+    </p>
+    <button type="button" onclick="lanzar()">Lanzar la petición</button>
+    <span id="cargando" class="note" hidden>consultando…</span>
+  </form>
+</div>
+
+<div class="card section" id="resultado" hidden>
+  <h2>Lo que ha contestado</h2>
+  <div id="resumen"></div>
+  <h3 style="margin-top:14px">Cuerpo</h3>
+  <pre class="scroll-x" id="cuerpo" style="max-height:420px;overflow:auto"></pre>
+</div>
+
+<script>
+  const PRESETS = {{ presets | tojson }};
+
+  function rellenar(preset) {
+    document.getElementById('fuente').value = preset.source;
+    document.getElementById('ruta').value = preset.path;
+    document.getElementById('params').value =
+      Object.entries(preset.params).map(([k, v]) => k + '=' + v).join('\n');
+  }
+
+  function leerParams() {
+    // Se admiten líneas en blanco y comentarios para poder ir descartando
+    // parámetros de uno en uno sin borrarlos.
+    const salida = {};
+    for (const linea of document.getElementById('params').value.split('\n')) {
+      const limpia = linea.trim();
+      if (!limpia || limpia.startsWith('#')) continue;
+      const corte = limpia.indexOf('=');
+      if (corte < 1) continue;
+      salida[limpia.slice(0, corte).trim()] = limpia.slice(corte + 1).trim();
+    }
+    return salida;
+  }
+
+  async function lanzar() {
+    const cargando = document.getElementById('cargando');
+    cargando.hidden = false;
+    const q = new URLSearchParams({
+      source: document.getElementById('fuente').value,
+      path: document.getElementById('ruta').value,
+      ...leerParams(),
+    });
+    let datos;
+    try {
+      const r = await fetch('/api/sources/rapidapi/raw?' + q.toString());
+      datos = await r.json();
+    } catch (e) {
+      datos = { detail: String(e) };
+    }
+    cargando.hidden = true;
+    pintar(datos);
+  }
+
+  function pintar(d) {
+    document.getElementById('resultado').hidden = false;
+    const ok = d.http_status === 200;
+    const mensaje = d.body && d.body.message ? d.body.message : '';
+    document.getElementById('resumen').innerHTML =
+      d.detail
+        ? `<div class="alert bad">${d.detail}</div>`
+        : `<div class="alert ${ok ? 'ok' : 'bad'}">
+             <strong>HTTP ${d.http_status}</strong> · ${d.latency_ms} ms
+             ${mensaje ? '<br>El proveedor dice: «' + mensaje + '»' : ''}
+           </div>
+           <table><tbody>
+             <tr><th>URL</th><td><code>${d.url}</code></td></tr>
+             <tr><th>Parámetros</th><td><code>${
+               Object.entries(d.params_enviados || {})
+                 .map(([k, v]) => k + '=' + v).join(' &amp; ') || 'ninguno'}</code></td></tr>
+             <tr><th>Clave</th><td><code>${d.key_fingerprint}</code></td></tr>
+             <tr><th>Claves del JSON</th><td><code>${
+               (d.top_level_keys || []).join(', ') || '—'}</code></td></tr>
+           </tbody></table>`;
+    document.getElementById('cuerpo').textContent =
+      typeof d.body === 'string' ? d.body : JSON.stringify(d.body, null, 2);
+  }
+
+  // Se arranca con el atajo de la primera fuente, para no empezar en blanco.
+  rellenar(Object.values(PRESETS)[0]);
+</script>
+{% endblock %}
