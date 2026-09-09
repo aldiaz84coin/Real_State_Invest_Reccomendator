@@ -38,6 +38,17 @@
         "--header",
         "x-api-key: ${RAPIDAPI_KEY}"
       ]
+    },
+    "rapidapi-idealista17": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://mcp.rapidapi.com",
+        "--header",
+        "x-api-host: idealista17.p.rapidapi.com",
+        "--header",
+        "x-api-key: ${RAPIDAPI_KEY}"
+      ]
     }
   }
 }

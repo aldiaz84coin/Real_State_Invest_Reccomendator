@@ -2427,3 +2427,58 @@ class TestSinDuplicarLoDelPortal:
             {"ids": ["SUB-JA-2026-123456"], "days": [], "announcements": []},
         )
         assert info["covered_auctions"] == ["SUB-JA-2026-123456"]
+
+
+class TestHostEquivocadoEnRapidApi:
+    """Un 404 aquí casi nunca es «no hay datos»: es un host de otro proveedor.
+
+    En RapidAPI varios revendedores sirven el mismo portal con rutas distintas,
+    y los nombres se parecen tanto —fotocasa1 y fotocasa3, idealista17 y
+    idealista-api1— que apuntar al que no es resulta facilísimo. El panel decía
+    «HTTP 404» a secas y obligaba a adivinar justo eso.
+    """
+
+    def _fotocasa(self, monkeypatch, host=None):
+        import httpx
+
+        from app.config import get_settings
+        import app.sources.rapidapi as rapidapi
+
+        monkeypatch.setenv("RAPIDAPI_KEYS", "rapidapi_fotocasa=clave")
+        if host:
+            monkeypatch.setenv("RAPIDAPI_HOSTS", f"rapidapi_fotocasa={host}")
+        get_settings.cache_clear()
+        rapidapi._check_cache.clear()
+        monkeypatch.setattr(
+            httpx.Client, "request",
+            lambda self, method, url, **kw: httpx.Response(
+                404, text="", request=httpx.Request(method, url)),
+        )
+        fuente = next(s for s in rapidapi.iter_rapidapi_sources()
+                      if s.key == "rapidapi_fotocasa")
+        estado = fuente.check()
+        get_settings.cache_clear()
+        return estado
+
+    def test_el_404_dice_que_el_host_no_reconoce_las_rutas(self, monkeypatch):
+        estado = self._fotocasa(monkeypatch, "fotocasa1.p.rapidapi.com")
+        assert "no reconoce las rutas" in estado.detail
+        assert "/searchads" in estado.detail
+
+    def test_nombra_los_dos_hosts_para_poder_compararlos(self, monkeypatch):
+        """Sin ver ambos no se nota que son proveedores distintos."""
+        estado = self._fotocasa(monkeypatch, "fotocasa1.p.rapidapi.com")
+        assert "fotocasa1.p.rapidapi.com" in estado.detail
+        assert "fotocasa3.p.rapidapi.com" in estado.detail
+        assert estado.extra["host_sobrescrito"] is True
+
+    def test_sin_sobrescribir_apunta_a_la_suscripcion(self, monkeypatch):
+        estado = self._fotocasa(monkeypatch)
+        assert estado.extra["host_sobrescrito"] is False
+        assert "suscrito a fotocasa3.p.rapidapi.com" in estado.detail
+
+    def test_el_host_en_uso_sale_siempre_en_el_estado(self, monkeypatch):
+        """Es el dato que faltaba para diagnosticar sin tocar el servidor."""
+        estado = self._fotocasa(monkeypatch, "fotocasa1.p.rapidapi.com")
+        assert estado.extra["host"] == "fotocasa1.p.rapidapi.com"
+        assert estado.extra["rutas"] == ["/searchads"]
