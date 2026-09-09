@@ -41,6 +41,7 @@ from app.simulation.costs import CostAssumptions
 from app.simulation.siteplan import SitePlanOptions
 from app.sources.base import SourceError
 from app.sources.boe import BoeSubastasSource
+from app.sources.boe_anuncios import BoeAnunciosSource
 from app.sources.boe_api import BoeSumarioSource
 from app.sources.catastro import CatastroSource
 from app.sources.idealista import IdealistaSource
@@ -1052,6 +1053,87 @@ def api_ingest_boe_sumario(
     from app.discovery import _from_boe_api, import_candidates
 
     info = _from_boe_api(province, max_results, candidatas)
+    if info.get("error"):
+        raise HTTPException(502, info["error"])
+    resumen = import_candidates(db, candidatas) if candidatas else {
+        "created": 0, "updated": 0, "skipped": 0, "analyzed": 0
+    }
+    return {"source": info, "imported": resumen}
+
+
+@app.get("/api/sources/boe-anuncios/probe", tags=["fuentes"])
+def api_probe_boe_anuncios(
+    identificador: str | None = Query(
+        None, description="Un anuncio concreto, p. ej. BOE-B-2026-23129"
+    ),
+    days: int = Query(3, ge=1, le=30),
+    province: str | None = Query(None),
+) -> dict[str, Any]:
+    """Qué saca del texto del anuncio la fuente de suelo público.
+
+    Con `identificador` enseña el desmenuzado de un anuncio concreto: el
+    precio con la etiqueta de la que sale, la superficie, los lotes y por qué
+    se descarta cada uno. Es la forma de comprobar el parseo contra un anuncio
+    real en vez de fiarse del recuento final.
+    """
+    fuente = BoeAnunciosSource()
+    if identificador:
+        try:
+            anuncio = fuente.fetch(identificador)
+        except SourceError as exc:
+            raise HTTPException(502, str(exc)) from None
+        from app.sources.boe_anuncios import (
+            is_land, is_sale, only_built, parse_price, split_lots,
+        )
+
+        texto = str(anuncio.get("texto") or "")
+        precio, etiqueta = parse_price(texto)
+        return {
+            "identificador": identificador,
+            "titulo": anuncio.get("titulo"),
+            "departamento": anuncio.get("departamento"),
+            "seccion": anuncio.get("seccion"),
+            "es_venta": is_sale(anuncio.get("titulo", "")),
+            "es_suelo": is_land(texto),
+            "solo_construido": only_built(texto),
+            "precio": precio,
+            "etiqueta_del_precio": etiqueta,
+            "lotes": [etiqueta for etiqueta, _ in split_lots(texto)],
+            "candidatas": fuente.candidates(anuncio),
+            "texto": texto[:1500],
+        }
+
+    sumario = BoeSumarioSource()
+    try:
+        recorrido = sumario.crawl(days=days, max_items=40)
+    except SourceError as exc:
+        raise HTTPException(502, str(exc)) from None
+    resultado = fuente.from_crawl(recorrido["announcements"], province=province)
+    return {
+        "days": recorrido["days"],
+        "announcements_read": len(recorrido["announcements"]),
+        "discarded": resultado["discarded"],
+        "candidates": resultado["candidates"][:20],
+    }
+
+
+@app.post("/api/ingest/boe-anuncios", tags=["ingesta"])
+def api_ingest_boe_anuncios(
+    days: int = Query(14, ge=1, le=60),
+    province: str | None = Query(None),
+    max_results: int = Query(25, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Carga el suelo que los organismos públicos anuncian en el Boletín.
+
+    Es la vía que recoge lo que el Portal de Subastas no tiene: SEPES, ADIF,
+    el INVIED y los ayuntamientos venden por pliego, y sus anuncios no llevan
+    identificador de subasta electrónica.
+    """
+    from app.discovery import _from_boe_anuncios, import_candidates
+
+    candidatas: list[dict[str, Any]] = []
+    info = _from_boe_anuncios(province, max_results, candidatas)
     if info.get("error"):
         raise HTTPException(502, info["error"])
     resumen = import_candidates(db, candidatas) if candidatas else {

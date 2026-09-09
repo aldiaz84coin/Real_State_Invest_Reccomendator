@@ -21,6 +21,12 @@ from app.sources.base import BaseSource, SourceError, SourceStatus
 
 # Ruta del buscador. consultas_subastas_ava.php devolvia 404: no existe.
 SEARCH_PATH = "subastas_ava.php"
+# El listado de resultados vive en otra pagina: subastas_ava.php pinta el
+# formulario y, cuando la busqueda cuaja, el portal lleva a subastas.php. Que
+# todas las estrategias devolvieran la misma pagina de 32 KB con un <form>
+# dentro es justo lo que se ve cuando se manda la busqueda a la pagina que
+# pinta el buscador en vez de a la que lista.
+RESULTS_PATH = "subastas.php"
 
 # Etiquetas del detalle de subasta que interesan, normalizadas sin acentos.
 FIELD_LABELS = {
@@ -168,9 +174,24 @@ class BoeSubastasSource(BaseSource):
         estrategias.append(("a-mano-get", "GET", SEARCH_PATH, dict(a_mano)))
         estrategias.append(("a-mano-post", "POST", SEARCH_PATH, dict(a_mano)))
 
+        # Las mismas busquedas contra la pagina de listado. Se prueban aunque
+        # el formulario diga que su action es subastas_ava.php: ese action
+        # devuelve el buscador otra vez, y el listado esta aqui.
+        if form:
+            del_formulario = search_params_from_form(form, code, max_results)
+            if del_formulario:
+                estrategias.append(
+                    ("listado-get", "GET", RESULTS_PATH, dict(del_formulario))
+                )
+                estrategias.append(
+                    ("listado-post", "POST", RESULTS_PATH, dict(del_formulario))
+                )
+        estrategias.append(("listado-a-mano", "GET", RESULTS_PATH, dict(a_mano)))
+
         # Sin ningun filtro: si aqui salen subastas, el problema son los
         # parametros; si no sale ninguna, es el acceso o el parseo.
         estrategias.append(("sin-filtros", "GET", SEARCH_PATH, {}))
+        estrategias.append(("listado-sin-filtros", "GET", RESULTS_PATH, {}))
         return estrategias
 
     def search(
@@ -239,6 +260,14 @@ class BoeSubastasSource(BaseSource):
                 info["http_status"] = response.status_code
                 info["bytes"] = len(response.text)
                 info["final_url"] = str(response.url)
+                # Sin la cadena de redirecciones no se distingue «el portal
+                # ignoro la busqueda» de «el portal me devolvio al formulario»,
+                # y son dos fallos distintos con arreglos distintos.
+                info["redirects"] = [
+                    f"{r.status_code} {r.headers.get('location', '')}"[:200]
+                    for r in response.history
+                ]
+                info["session_cookies"] = sorted(client.cookies.keys())
                 if response.status_code != 200:
                     resultados.append((nombre, [], info))
                     continue

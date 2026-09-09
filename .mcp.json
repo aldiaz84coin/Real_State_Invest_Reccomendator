@@ -1,0 +1,43 @@
+{
+  "_comentario": [
+    "Servidores MCP del proyecto. Este fichero SE VERSIONA y se comparte con",
+    "quien clone el repositorio, asi que nunca lleva claves dentro: se escriben",
+    "como ${VARIABLE} y Claude Code las expande desde el entorno.",
+    "La clave va en .env (ignorado por git) o exportada en la sesion.",
+    "",
+    "Ojo con lo que da y lo que no: esto anade herramientas a una sesion de",
+    "Claude Code, no a la aplicacion. La app desplegada habla con RapidAPI por",
+    "HTTP desde app/sources/rapidapi.py, y para eso necesita RAPIDAPI_KEY como",
+    "variable de entorno o como secreto de Fly, no este fichero.",
+    "",
+    "Ojo: el conector rapidapi_fotocasa esta escrito contra fotocasa3, no",
+    "contra el fotocasa1 de aqui. Son proveedores distintos con endpoints",
+    "distintos, asi que apuntar el conector a fotocasa1 con RAPIDAPI_HOSTS no",
+    "basta. Este servidor MCP sirve justo para averiguar que rutas y que forma",
+    "de respuesta tiene fotocasa1 antes de escribir nada."
+  ],
+  "mcpServers": {
+    "rapidapi-idealista": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://mcp.rapidapi.com",
+        "--header",
+        "x-api-host: idealista-api1.p.rapidapi.com",
+        "--header",
+        "x-api-key: ${RAPIDAPI_KEY}"
+      ]
+    },
+    "rapidapi-fotocasa": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://mcp.rapidapi.com",
+        "--header",
+        "x-api-host: fotocasa1.p.rapidapi.com",
+        "--header",
+        "x-api-key: ${RAPIDAPI_KEY}"
+      ]
+    }
+  }
+}
