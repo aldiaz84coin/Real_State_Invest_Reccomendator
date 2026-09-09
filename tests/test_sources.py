@@ -458,11 +458,11 @@ class TestIdealista17:
         return RapidApiIdealista17Source()
 
     def test_usa_las_rutas_reales_de_su_documentacion(self):
-        """La de coordenadas encaja mejor con esta app, pero el plan BASIC la
-        excluye, así que va detrás de la que sí responde."""
+        """La de coordenadas va primera: es la que encaja con cómo busca esta
+        aplicación, un punto y un radio."""
         paths = self._source().search_paths
-        assert paths[0] == "/property-search"
-        assert "/property-search-by-coordinates" in paths
+        assert paths[0] == "/property-search-by-coordinates"
+        assert "/property-search" in paths
 
     def test_localiza_los_anuncios_del_ejemplo_documentado(self):
         from app.sources.rapidapi import extract_listings
@@ -517,12 +517,16 @@ class TestIdealista17:
         assert params["search_type"] == "for_sale"
         assert params["property_type"] == "lands"
         assert params["country"] == "es"
-        assert params["radius"] == 15000
+        # El radio va en kilómetros, no en metros.
+        assert params["radius_km"] == 15
         assert params["page"] == 2
         assert params["max_price"] == 90000
+        # Obligatorios en la práctica pese a parecer opcionales.
+        assert params["sort_order"] == "default"
+        assert params["result_count"] == 30
         # Los de la API oficial no valen aquí y no deben colarse.
-        assert "propertyType" not in params
-        assert "operation" not in params
+        for inventado in ("propertyType", "operation", "locale", "maxItems", "radius"):
+            assert inventado not in params
 
     def test_clave_propia_por_fuente(self, monkeypatch):
         """RapidAPI da una clave por aplicación y suele haber una por API."""
@@ -576,7 +580,7 @@ class TestIdealista17:
                 vistos.append(url)
                 # La primera ruta no existe; debe seguir con la siguiente.
                 ruta = str(url).split("?")[0]
-                code = 404 if ruta.endswith("/property-search") else 200
+                code = 404 if ruta.endswith("by-coordinates") else 200
                 return httpx.Response(
                     code, json=TestIdealista17.EJEMPLO_DOC if code == 200 else {},
                     request=httpx.Request(method, url),
@@ -584,7 +588,7 @@ class TestIdealista17:
 
             monkeypatch.setattr(httpx.Client, "request", fake)
             path, payload = source.fetch_page({})
-            assert path == "/property-search-by-zip"
+            assert path == "/property-search"
             assert len(vistos) == 2  # probó la primera y pasó a la segunda
         finally:
             get_settings.cache_clear()
@@ -2909,3 +2913,94 @@ class TestElMensajeDelCuatrocientos:
         assert _mensaje_del_proveedor(resp('{"error":"invalid"}')) == "invalid"
         # Y si no es JSON, el texto crudo sirve igual.
         assert "Bad Request" in _mensaje_del_proveedor(resp("Bad Request"))
+
+
+class TestIdealista17Verificado:
+    """Parámetros y envoltorio comprobados contra el proveedor, no deducidos.
+
+    Este conector se copió de la API oficial de Idealista y llevaba sus
+    nombres: `propertyType`, `operation`, `locale`, `maxItems`, `radius` en
+    metros. Este revendedor usa otros, y contestaba «Invalid request
+    parameters» sin decir cuál, así que hicieron falta varias llamadas reales
+    para dar con ellos. Se fijan aquí para que no se pierdan.
+    """
+
+    # Respuesta real de /property-search-by-coordinates, recortada.
+    REAL = {
+        "success": True,
+        "data": {
+            "total": 1571, "totalPages": 53, "currentPage": 1, "itemsPerPage": 30,
+            "listings": [{
+                "propertyCode": "109772825", "price": 295000,
+                "propertyType": "flat", "operation": "sale", "size": 78,
+                "rooms": 2, "bathrooms": 1,
+                "address": "Flat in Calle de San Hermenegildo, Madrid",
+                "province": "Madrid", "municipality": "Madrid",
+                "latitude": 40.4262, "longitude": -3.7053,
+                "url": "https://www.idealista.com/inmueble/109772825/",
+            }],
+        },
+    }
+
+    def _fuente(self):
+        from app.sources.rapidapi import RapidApiIdealista17Source
+
+        return RapidApiIdealista17Source()
+
+    def test_los_nombres_son_los_que_admite_el_proveedor(self):
+        params = self._fuente().build_params(40.4168, -3.7038, 3.0)
+        assert params["latitude"] == 40.4168
+        assert params["longitude"] == -3.7038
+        assert params["radius_km"] == 3
+        assert params["language"] == "en"
+        assert params["search_type"] == "for_sale"
+        assert params["sort_order"] == "default"
+
+    def test_el_radio_va_en_kilometros(self):
+        """En metros -como la API oficial- la petición se rechaza."""
+        assert self._fuente().build_params(40.0, -3.0, 15.0)["radius_km"] == 15
+        # Nunca cero: un radio de 400 m redondearía a 0 y no busca nada.
+        assert self._fuente().build_params(40.0, -3.0, 0.4)["radius_km"] == 1
+
+    def test_lee_los_anuncios_del_envoltorio_real(self):
+        """Vienen en data.listings, no en elementList como la API oficial."""
+        from app.sources.rapidapi import extract_listings
+
+        assert len(extract_listings(self.REAL)) == 1
+
+    def test_normaliza_un_anuncio_real(self):
+        from app.sources.rapidapi import extract_listings
+
+        anuncio = self._fuente().normalize(extract_listings(self.REAL)[0])
+        assert anuncio["external_id"] == "109772825"
+        assert anuncio["price_eur"] == 295000.0
+        assert anuncio["area_m2"] == 78.0
+        assert (anuncio["lat"], anuncio["lon"]) == (40.4262, -3.7053)
+        assert anuncio["municipality_name"] == "Madrid"
+
+    def test_saca_el_identificador_de_zona_de_smart_search(self):
+        """/property-search no busca por coordenadas: quiere el locationId."""
+        respuesta = {"success": True, "data": {"searchText": "chamberi", "results": [
+            {"name": "Chamberí, Madrid", "type": "location",
+             "locationId": "0-EU-ES-28-07-001-079-04"}]}}
+        assert self._fuente().parse_location_id(respuesta) == "0-EU-ES-28-07-001-079-04"
+
+    def test_sin_sugerencias_no_se_inventa_una_zona(self):
+        assert self._fuente().parse_location_id({"data": {"results": []}}) == ""
+
+    def test_la_zona_se_manda_como_location_ids(self):
+        params = self._fuente().build_params(
+            40.0, -3.0, 5.0, location_ids="0-EU-ES-28-07-001-079")
+        assert params["location_ids"] == "0-EU-ES-28-07-001-079"
+
+    def test_el_tipo_de_inmueble_se_puede_cambiar_sin_tocar_codigo(self, monkeypatch):
+        """`lands` es lo que necesita la app; `homes` es lo comprobado. Si este
+        revendedor lo nombrara de otra forma, no debe costar un despliegue."""
+        from app.config import get_settings
+
+        assert self._fuente().property_type == "lands"
+        monkeypatch.setenv("RAPIDAPI_PARAMS",
+                           "rapidapi_idealista17.property_type=homes")
+        get_settings.cache_clear()
+        assert self._fuente().property_type == "homes"
+        get_settings.cache_clear()
