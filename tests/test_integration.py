@@ -564,3 +564,49 @@ class TestDescubrimientoWeb:
         # Y ahora el buscador ya tiene algo que enseñar.
         html = client.get("/buscar", params={"min_discount_pct": 0}).text
         assert "No hay ningún anuncio cargado" not in html
+
+
+class TestConsolaDeRapidApi:
+    """La página que rompe el ciclo «cambio código, despliego, miro el panel».
+
+    Estos revendedores contestan «Invalid request parameters» sin decir cuál,
+    y hacen falta ocho o diez pruebas para dar con la combinación. A un
+    despliegue por prueba eso no se acaba nunca.
+    """
+
+    def _pagina(self, client):
+        return client.get("/fuentes/rapidapi")
+
+    def test_la_pagina_carga_sin_tocar_la_red(self, client):
+        """Sólo pinta el formulario: las peticiones las lanza el usuario."""
+        respuesta = self._pagina(client)
+        assert respuesta.status_code == 200
+        assert "Consola de RapidAPI" in respuesta.text
+
+    def test_enseña_la_huella_de_la_clave_de_cada_fuente(self, client, monkeypatch):
+        """Es lo que permite ver que el servidor usa una clave distinta de la
+        que uno prueba a mano, que es lo que estaba pasando."""
+        from app.config import get_settings
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "clave-de-prueba-1234")
+        get_settings.cache_clear()
+        texto = self._pagina(client).text
+        get_settings.cache_clear()
+        assert "clave-…1234" in texto
+        # Y nunca la clave entera.
+        assert "clave-de-prueba-1234" not in texto
+
+    def test_enseña_el_host_y_las_rutas_que_prueba(self, client):
+        texto = self._pagina(client).text
+        assert "idealista17.p.rapidapi.com" in texto
+        assert "/property-search-by-coordinates" in texto
+
+    def test_trae_atajos_de_llamadas_que_ya_responden(self, client):
+        """Empezar de algo que funciona y cambiar una cosa cada vez es lo que
+        permite aislar el parámetro que falla."""
+        texto = self._pagina(client).text
+        assert "idealista17 · coordenadas" in texto
+        assert "fotocasa · sin filtros de precio" in texto
+
+    def test_el_panel_de_fuentes_enlaza_la_consola(self, client):
+        assert '/fuentes/rapidapi' in client.get("/fuentes").text

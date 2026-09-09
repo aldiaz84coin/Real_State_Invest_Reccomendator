@@ -3004,3 +3004,66 @@ class TestIdealista17Verificado:
         get_settings.cache_clear()
         assert self._fuente().property_type == "homes"
         get_settings.cache_clear()
+
+
+class TestQueSeEnvioDeVerdad:
+    """El proveedor se queja de parámetros concretos; hay que ver los enviados.
+
+    Fotocasa contestó «Parameters minPrice, maxPrice, conservationStatus,
+    features are not allowed for property type LAND». Sin saber cuáles se
+    mandaron no se puede cruzar esa lista con nada, y el conector sólo manda
+    algunos de ellos y sólo a veces.
+    """
+
+    def _sondear(self, monkeypatch, responder, fuente="rapidapi_fotocasa"):
+        import httpx
+
+        from app.config import get_settings
+        import app.sources.rapidapi as rapidapi
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "clave-de-prueba-1234")
+        get_settings.cache_clear()
+        rapidapi._check_cache.clear()
+        monkeypatch.setattr(httpx.Client, "request", responder)
+        origen = next(s for s in rapidapi.iter_rapidapi_sources() if s.key == fuente)
+        estado = origen.check()
+        get_settings.cache_clear()
+        rapidapi._check_cache.clear()
+        return estado
+
+    def test_el_400_dice_que_parametros_se_enviaron(self, monkeypatch):
+        import httpx
+
+        def responder(self, m, u, **k):
+            # Como en producción: no tiene ruta de salud, y la búsqueda es la
+            # que se queja de los parámetros.
+            if "/health" in str(u):
+                return httpx.Response(404, text="", request=httpx.Request(m, u))
+            return httpx.Response(
+                400, json={"message": "Parameters minPrice, maxPrice are not "
+                                      "allowed for property type LAND"},
+                request=httpx.Request(m, u))
+
+        # Fotocasa resuelve antes la zona con Nominatim; aquí no toca red.
+        from app.sources.rapidapi import RapidApiFotocasaSource
+
+        monkeypatch.setattr(RapidApiFotocasaSource, "resolve_location",
+                            lambda self, lat, lon, query=None: "724,1")
+        estado = self._sondear(monkeypatch, responder)
+        assert "not allowed for property type LAND" in estado.detail
+        assert "enviados:" in estado.detail
+        assert "propertyType" in estado.detail
+
+    def test_el_rechazo_por_plan_lleva_la_huella_de_la_clave(self, monkeypatch):
+        """El mismo endpoint responde distinto con dos claves distintas; sin
+        verla no se nota que el servidor usa una y tú pruebas con otra."""
+        import httpx
+
+        estado = self._sondear(
+            monkeypatch,
+            lambda self, m, u, **k: httpx.Response(
+                401, json={"message": "This endpoint is disabled for your subscription"},
+                request=httpx.Request(m, u)),
+            fuente="rapidapi_idealista17")
+        assert "clave-…1234" in estado.detail
+        assert "fuera del plan" in estado.detail

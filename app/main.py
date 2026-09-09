@@ -1454,6 +1454,75 @@ def page_sources(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
     )
 
 
+@app.get("/fuentes/rapidapi", response_class=HTMLResponse, include_in_schema=False)
+def page_debug_rapidapi(request: Request) -> HTMLResponse:
+    """Consola para acertar con los parámetros de los revendedores.
+
+    Existe porque el ciclo de «cambio el código, despliego, miro el panel» es
+    carísimo y estos proveedores contestan «Invalid request parameters» sin
+    decir cuál: hacen falta ocho o diez pruebas para dar con la combinación, y
+    a un despliegue por prueba eso no se acaba nunca. Aquí se prueban desde el
+    navegador contra el proveedor de verdad.
+
+    Los atajos salen de llamadas que ya se sabe que responden, para empezar de
+    algo que funciona y ir cambiando una cosa cada vez.
+    """
+    fuentes = []
+    for fuente in iter_rapidapi_sources():
+        fuentes.append({
+            "key": fuente.key,
+            "name": fuente.name,
+            "host": fuente.host,
+            "host_por_defecto": type(fuente).host,
+            "host_sobrescrito": fuente.host != type(fuente).host,
+            "key_fingerprint": fuente.key_fingerprint(fuente.api_key),
+            "rutas": list(fuente.search_paths),
+        })
+
+    presets = {
+        "idealista17 · coordenadas": {
+            "source": "rapidapi_idealista17",
+            "path": "/property-search-by-coordinates",
+            "params": {
+                "country": "es", "language": "en", "search_type": "for_sale",
+                "property_type": "homes", "latitude": "40.4168",
+                "longitude": "-3.7038", "radius_km": "3", "result_count": "30",
+                "sort_order": "default", "page": "1",
+            },
+        },
+        "idealista17 · terrenos": {
+            "source": "rapidapi_idealista17",
+            "path": "/property-search-by-coordinates",
+            "params": {
+                "country": "es", "language": "en", "search_type": "for_sale",
+                "property_type": "lands", "latitude": "40.4168",
+                "longitude": "-3.7038", "radius_km": "3", "result_count": "30",
+                "sort_order": "default", "page": "1",
+            },
+        },
+        "idealista17 · zonas": {
+            "source": "rapidapi_idealista17",
+            "path": "/smart-search",
+            "params": {"country": "es", "language": "en",
+                       "search_type": "for_sale", "property_type": "homes",
+                       "search_text": "Santander"},
+        },
+        "fotocasa · sin filtros de precio": {
+            "source": "rapidapi_fotocasa",
+            "path": "/searchads",
+            "params": {
+                "propertyType": "LAND", "transactionType": "BUY",
+                "latitude": "43.4623", "longitude": "-3.8100",
+                "pageNumber": "1", "size": "30",
+            },
+        },
+    }
+    return templates.TemplateResponse(
+        "debug_rapidapi.html",
+        {"request": request, "fuentes": fuentes, "presets": presets},
+    )
+
+
 def _render_search(
     request: Request, db: Session, query: OpportunityQuery, **extra: Any
 ) -> HTMLResponse:
