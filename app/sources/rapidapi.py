@@ -13,6 +13,7 @@ configurable y el codigo no asume una forma de respuesta concreta.
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, Iterable
 
@@ -88,6 +89,64 @@ class RapidApiSource(BaseSource):
     @property
     def configured(self) -> bool:
         return bool(self.api_key and self.host)
+
+    @staticmethod
+    def key_fingerprint(clave: str) -> str:
+        """Huella de la clave: suficiente para reconocerla, inútil para usarla.
+
+        La causa más común de un 401 en producción no es la clave, es que en el
+        servidor no está la que uno cree: falta el secreto, se quedó a medias o
+        lleva comillas pegadas. Sin poder comparar no hay forma de descartarlo,
+        y enseñar la clave entera en un panel web no es opción.
+        """
+        if not clave:
+            return "(vacía)"
+        return f"{clave[:6]}…{clave[-4:]} ({len(clave)} caracteres)"
+
+    def _explicar_rechazo(self, response: Any) -> str:
+        """Traduce el rechazo de RapidAPI, que distingue dos casos distintos.
+
+        Son problemas diferentes con arreglos diferentes, y mezclarlos mandaba
+        a suscribirse a quien ya lo estaba:
+
+          * **401** — la clave falta o no vale. No es cosa de la suscripción.
+          * **403** — la clave es buena, pero esa aplicación no está suscrita a
+            esta API. En RapidAPI la suscripción es de la *aplicación*, no de
+            la cuenta: estar suscrito con otra app del mismo usuario no sirve.
+
+        Se incluye además el mensaje del propio RapidAPI, que dice cuál de los
+        dos es sin ambigüedad; descartarlo era lo que obligaba a adivinar.
+        """
+        suyo = ""
+        try:
+            cuerpo = response.json()
+            suyo = str(cuerpo.get("message") or cuerpo.get("error") or "")[:200]
+        except Exception:
+            suyo = str(getattr(response, "text", ""))[:200]
+        suyo = re.sub(r"\s+", " ", suyo).strip()
+        coletilla = f" RapidAPI dice: «{suyo}»." if suyo else ""
+        huella = self.key_fingerprint(self.api_key)
+
+        if response.status_code == 401:
+            return (
+                f"{self.name}: HTTP 401 contra {self.host}. Puede ser la clave o "
+                "puede ser la suscripción: no todos los proveedores de RapidAPI "
+                "usan el 403 para «no suscrito», y varios contestan 401 a las "
+                "dos cosas. Lo dice el mensaje de abajo, no el código. "
+                f"Se envió {huella} en x-rapidapi-key. Si el mensaje habla de "
+                f"suscripción, suscribe ESA aplicación en {self.docs_url} con "
+                "«Subscribe to Test» y el plan Basic; si habla de la clave, "
+                "revisa RAPIDAPI_KEY en el servidor y que la app siga viva en "
+                f"https://rapidapi.com/developer/apps.{coletilla}"
+            )
+        return (
+            f"{self.name}: HTTP 403, la clave vale pero esa aplicación no está "
+            f"suscrita a {self.host}. En RapidAPI la suscripción es de la "
+            "APLICACIÓN, no de la cuenta: estar suscrito con otra app del mismo "
+            "usuario no sirve, y hay que suscribir cada API por separado aunque "
+            f"sea al plan gratuito. Entra en {self.docs_url}, pulsa «Subscribe "
+            f"to Test» y elige Basic con la app de la clave {huella}.{coletilla}"
+        )
 
     def headers(self) -> dict[str, str]:
         return {
@@ -184,13 +243,7 @@ class RapidApiSource(BaseSource):
             if response.status_code == 429:
                 raise SourceError(f"{self.name}: cuota de RapidAPI agotada (HTTP 429).")
             if response.status_code in (401, 403):
-                raise SourceError(
-                    f"{self.name}: clave rechazada (HTTP {response.status_code}). "
-                    "En RapidAPI hay que suscribirse a CADA API por separado, "
-                    "incluso al plan gratuito: estar suscrito a otra no sirve. "
-                    f"Entra en {self.docs_url}, pulsa «Subscribe to Test» y elige "
-                    "el plan Basic."
-                )
+                raise SourceError(self._explicar_rechazo(response))
             if response.status_code in (404, 400):
                 errors.append(f"{path} -> HTTP {response.status_code}")
                 continue
@@ -344,9 +397,20 @@ class RapidApiSource(BaseSource):
                     "anuncios se verifica en /api/sources/rapidapi/probe, que sí "
                     "consume una petición."
                 )
-            self._explicar(status, sobrescrito, por_defecto)
-            _store_status(self.key, status)
-            return status
+                self._explicar(status, sobrescrito, por_defecto)
+                _store_status(self.key, status)
+                return status
+            # Un 404 aquí no dice nada malo de la fuente: dice que ese
+            # proveedor no tiene ruta de salud, que es lo normal —la ofrecen
+            # pocos—. Y encima es buena señal: si la petición llegó al
+            # proveedor, la pasarela de RapidAPI la dejó pasar, o sea que la
+            # clave vale y la suscripción existe. Marcarlo en rojo hacía
+            # parecer rota una fuente que sólo estaba mal sondeada, así que se
+            # cae al sondeo de verdad.
+            if status.status_code != 404:
+                self._explicar(status, sobrescrito, por_defecto)
+                _store_status(self.key, status)
+                return status
 
         # Sin endpoint de salud se sondea con el mismo mecanismo que la
         # búsqueda real, probando las rutas candidatas: sondear sólo la primera
@@ -364,10 +428,14 @@ class RapidApiSource(BaseSource):
         except SourceError as exc:
             message = str(exc)
             latency = int((time.perf_counter() - started) * 1000)
-            if "rechazada" in message:
+            if "rechazada" in message or "HTTP 401" in message or "HTTP 403" in message:
                 estado = self._status("needs_credentials", message, 401, latency)
             elif "cuota" in message:
                 estado = self._status("error", message, 429, latency)
+            elif "ninguna ruta candidata" in message:
+                # Todas las rutas dieron 404: el host contesta pero no las
+                # conoce. _explicar lo traduce a «esto es otro proveedor».
+                estado = self._status("error", message, 404, latency)
             else:
                 estado = self._status("error", message, latency_ms=latency)
             self._explicar(estado, sobrescrito, por_defecto)
