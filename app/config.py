@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     overpass_url: str = "https://overpass-api.de/api/interpreter"
     nominatim_url: str = "https://nominatim.openstreetmap.org"
     insideairbnb_url: str = "https://insideairbnb.com/get-the-data"
+    # API de datos abiertos del BOE: documentada, sin clave y sin cuota
+    # publicada. Es la via limpia para las subastas, frente a raspar el
+    # buscador del portal.
+    boe_api_url: str = "https://boe.es/datosabiertos/api"
+    boe_diario_url: str = "https://www.boe.es/diario_boe"
 
     # Nominatim y Overpass exigen identificar al cliente.
     contact_email: str = "contacto@ejemplo.com"

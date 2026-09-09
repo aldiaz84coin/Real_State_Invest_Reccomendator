@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import SourceCheck
 from app.sources.base import BaseSource, SourceStatus
 from app.sources.boe import BoeSubastasSource
+from app.sources.boe_api import BoeSumarioSource
 from app.sources.catastro import CatastroSource
 from app.sources.idealista import FotocasaSource, IdealistaSource, PisosComSource
 from app.sources.osm import NominatimSource, OverpassSource
@@ -28,6 +29,7 @@ def build_sources() -> list[BaseSource]:
         IdealistaSource(),
         FotocasaSource(),
         PisosComSource(),
+        BoeSumarioSource(),
         BoeSubastasSource(),
         *iter_rapidapi_sources(),
         CatastroSource(),
