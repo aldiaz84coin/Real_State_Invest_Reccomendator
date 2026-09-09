@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     rapidapi_keys: str = ""    # "clave_fuente=API_KEY,clave_fuente=API_KEY"
     rapidapi_hosts: str = ""   # "clave_fuente=host"
     rapidapi_paths: str = ""   # "clave_fuente=/ruta"
+    # Valores sueltos de parametros que cambian entre revendedores sin que
+    # cambie nada mas: "clave_fuente.parametro=valor".
+    rapidapi_params: str = ""
 
     # Fuentes publicas abiertas: no requieren credenciales.
     catastro_ovc_url: str = "https://ovc.catastro.meh.es"
@@ -85,6 +88,10 @@ class Settings(BaseSettings):
 
     def rapidapi_path_for(self, source_key: str) -> str | None:
         return _parse_overrides(self.rapidapi_paths).get(source_key)
+
+    def rapidapi_param_for(self, source_key: str, param: str) -> str | None:
+        """Valor de un parámetro concreto de una fuente, si se ha fijado."""
+        return _parse_overrides(self.rapidapi_params).get(f"{source_key}.{param}")
 
 
 def _parse_overrides(raw: str) -> dict[str, str]:

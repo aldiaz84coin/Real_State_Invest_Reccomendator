@@ -649,68 +649,120 @@ class RapidApiFotocasaSource(RapidApiSource):
 class RapidApiIdealista17Source(RapidApiSource):
     """Idealista Data API de HappyEndpoint.
 
-    Su esquema replica el de la API oficial de Idealista (envoltorio
-    `elementList`, `propertyCode`, `price`, `size`), asi que el mapeo generico
-    ya encaja. Se usa la busqueda por coordenadas porque es la unica que casa
-    con como busca esta aplicacion: un radio alrededor de un punto.
-
-    Ojo con la cuota: el plan gratuito son 500 peticiones al mes, de ahi que
-    el numero de paginas por defecto sea bajo.
+    Sus parámetros y su envoltorio están comprobados contra el proveedor, no
+    deducidos. Es la única forma de acertar aquí: contesta «Invalid request
+    parameters» sin decir cuál sobra ni cuál falta.
     """
 
     key = "rapidapi_idealista17"
     name = "Idealista Data API vía RapidAPI (respaldo no oficial)"
     portal = "Idealista"
     host = "idealista17.p.rapidapi.com"
-    # Rutas de su documentacion, ordenadas por lo que entra en el plan. La
-    # busqueda por coordenadas seria la que mejor encaja con esta aplicacion,
-    # pero el plan BASIC la excluye («This endpoint is disabled for your
-    # subscription»), asi que va detras de la que si responde.
+    # La busqueda por coordenadas va primera: es la que encaja con como busca
+    # esta aplicacion, un punto y un radio. Se llego a creer que el plan BASIC
+    # la excluia, pero lo que iba mal era la llamada.
     search_paths = (
-        "/property-search",
-        "/property-search-by-zip",
         "/property-search-by-coordinates",
+        "/property-search",
     )
-    radius_note = "Radio en metros alrededor del punto."
+    suggestions_path = "/smart-search"
+    radius_note = "Radio en kilómetros alrededor del punto."
     docs_url = "https://rapidapi.com/happyendpoint/api/idealista17"
     licence = (
         "No oficial. Servicio independiente sin relación con Idealista; "
         "plan gratuito de 500 peticiones al mes."
     )
 
+    @property
+    def property_type(self) -> str:
+        """Tipo de inmueble que se pide.
+
+        `lands` es lo que necesita esta aplicación y lo que usa la taxonomía de
+        Idealista; el valor comprobado contra este revendedor es `homes`. Queda
+        configurable para poder cambiarlo sin tocar código si resultara que
+        aquí se nombra de otra forma.
+        """
+        return self.settings.rapidapi_param_for(self.key, "property_type") or "lands"
+
     def build_params(self, lat: float, lon: float, radius_km: float, **filters: Any) -> dict[str, Any]:
-        """Parámetros en la forma que admite este proveedor.
+        """Parámetros tal y como los admite, comprobados uno a uno.
 
-        Iban en camelCase -`propertyType`, `operation`, `locale`, `maxItems`-,
-        que es como los nombra la API oficial de Idealista, y por eso
-        `/property-search` contestaba HTTP 400: «Invalid or missing
-        parameters». Este revendedor los usa en snake_case, como se ve en el
-        ejemplo de su propia documentación:
+        Iban en camelCase -`propertyType`, `operation`, `locale`, `maxItems`,
+        `radius` en metros-, que es como los nombra la API **oficial** de
+        Idealista, de donde se copió este conector:
 
-            /smart-search?language=en&search_text=…&search_type=for_sale
-                         &country=es&property_type=homes
+            propertyType -> property_type      operation -> search_type=for_sale
+            locale       -> language           maxItems  -> result_count
+            radius (m)   -> radius_km (km)
 
-        Las coordenadas se mandan igualmente: `/property-search-by-coordinates`
-        las necesita si algún día el plan la incluye, y sobran sin estorbar en
-        las rutas que no las miran.
+        `sort_order` y `page` tampoco son opcionales en la práctica: sin ellos
+        la petición se rechaza igual, y con el mismo mensaje genérico.
         """
         params: dict[str, Any] = {
             "country": "es",
-            "language": "es",
+            "language": "en",
             "search_type": "for_sale",
-            "property_type": "lands",
+            "property_type": self.property_type,
             "latitude": lat,
             "longitude": lon,
-            "radius": int(radius_km * 1000),
+            "radius_km": max(1, round(radius_km)),
+            "result_count": 30,
+            "sort_order": "default",
             "page": filters.get("page", 1),
         }
+        # /property-search no entiende de coordenadas: quiere el identificador
+        # de zona de Idealista, que se resuelve antes con /smart-search.
+        zona = filters.get("location_ids")
+        if zona:
+            params["location_ids"] = zona
+        if filters.get("max_price"):
+            params["max_price"] = int(filters["max_price"])
         if filters.get("min_size_m2"):
             params["min_size"] = int(filters["min_size_m2"])
         if filters.get("max_size_m2"):
             params["max_size"] = int(filters["max_size_m2"])
-        if filters.get("max_price"):
-            params["max_price"] = int(filters["max_price"])
         return params
+
+    def resolve_location(self, lat: float, lon: float, query: str | None = None) -> str:
+        """Identificador de zona de Idealista para un punto.
+
+        Hace falta sólo para `/property-search`, que busca por zona. Sale de
+        `/smart-search`, que traduce un nombre de sitio a su `locationId`
+        (`0-EU-ES-28-07-001-079`).
+        """
+        if query is None:
+            from app.sources.osm import NominatimSource
+
+            place = NominatimSource().reverse(lat, lon)
+            if not place:
+                raise SourceError(
+                    f"{self.name}: no se pudo determinar el municipio de "
+                    f"({lat}, {lon})."
+                )
+            query = place["municipality"]
+
+        response = self.request(
+            "GET", f"{self.base_url()}{self.suggestions_path}",
+            headers=self.headers(),
+            params={"country": "es", "language": "en", "search_type": "for_sale",
+                    "property_type": self.property_type, "search_text": query},
+        )
+        if response.status_code != 200:
+            raise SourceError(
+                f"{self.name}: {self.suggestions_path} HTTP {response.status_code}"
+                f" — {_mensaje_del_proveedor(response)}"
+            )
+        return self.parse_location_id(response.json())
+
+    @staticmethod
+    def parse_location_id(payload: Any) -> str:
+        """`locationId` de la primera sugerencia que sea una zona."""
+        datos = payload.get("data") if isinstance(payload, dict) else None
+        resultados = (datos or {}).get("results") if isinstance(datos, dict) else None
+        for elemento in resultados or []:
+            if isinstance(elemento, dict) and elemento.get("locationId"):
+                return str(elemento["locationId"])
+        return ""
 
 
 def extract_listings(payload: Any) -> list[dict[str, Any]]:
