@@ -148,6 +148,8 @@ def _from_boe(
          "http_status": detalle.get("http_status"),
          "bytes": detalle.get("bytes"),
          "cookies": detalle.get("cookies"),
+         "form_fields": detalle.get("form_fields"),
+         "province_slot": detalle.get("province_slot"),
          "patterns": detalle.get("link_patterns"),
          "excerpt": detalle.get("body_excerpt"),
          "error": detalle.get("error")}

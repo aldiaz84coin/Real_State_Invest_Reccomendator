@@ -165,6 +165,9 @@
                   {{ e.ids }} subasta{{ '' if e.ids == 1 else 's' }}
                   {%- if e.http_status %} · HTTP {{ e.http_status }}, {{ e.bytes }} bytes{% endif %}
                   {%- if e.cookies %} · cookies: {{ e.cookies | join(', ') }}{% endif %}
+                  {%- if e.form_fields %} · {{ e.form_fields }} campos leídos del formulario
+                    {%- if e.province_slot %}, provincia en <code>{{ e.province_slot }}</code>{% endif %}
+                  {%- endif %}
                   {%- if e.error %} · {{ e.error }}{% endif %}
                   {%- if e.patterns %}
                   <br><span class="note">enlaces: {% for k, v in e.patterns.items() %}{{ k }}={{ v }}{{ ' · ' if not loop.last }}{% endfor %}</span>

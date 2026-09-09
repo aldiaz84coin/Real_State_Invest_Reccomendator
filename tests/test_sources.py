@@ -1472,8 +1472,8 @@ class TestSubastasBoe:
         que se prueban varias en vez de fijar una sola y darla por buena."""
         estrategias = self._source()().search_strategies("Cantabria", 40)
         nombres = [n for n, _, _, _ in estrategias]
-        assert len(nombres) >= 4
-        assert any("sin-filtros" in n for n in nombres)   # sonda del portal
+        assert len(nombres) >= 3
+        assert nombres[-1] == "sin-filtros"        # la última sirve de sonda
 
     def test_se_prueba_tambien_por_post(self):
         """El formulario del portal es un POST; que acepte GET no está dicho."""
@@ -1481,13 +1481,22 @@ class TestSubastasBoe:
         metodos = {metodo for _, metodo, _, _ in estrategias}
         assert metodos == {"GET", "POST"}
 
-    def test_la_provincia_entra_en_los_filtros(self):
+    def test_la_provincia_va_en_el_campo_que_dice_el_formulario(self):
+        """El portal la espera en dato[8]; se venía mandando en dato[2]."""
         params = {n: p for n, _, _, p in self._source()().search_strategies("Cantabria", 40)}
-        assert "39" in params["get-filtrada"].values()
+        assert params["a-mano-get"]["dato[8]"] == "39"
 
     def test_sin_provincia_no_se_filtra_por_ella(self):
         params = {n: p for n, _, _, p in self._source()().search_strategies(None, 40)}
-        assert "BIEN.PROVINCIA" not in params["get-filtrada"].values()
+        assert "dato[8]" not in params["a-mano-get"]
+
+    def test_solo_se_mandan_valores_que_el_portal_admite(self):
+        """page_hits admite 50, 100, 200 y 500; se mandaba 25 y 40."""
+        params = {n: p for n, _, _, p in self._source()().search_strategies("Cantabria", 25)}
+        a_mano = params["a-mano-get"]
+        assert a_mano["page_hits"] in (50, 100, 200, 500)
+        # SUBASTA.FECHA_FIN_YMD no está entre las opciones de ordenación.
+        assert a_mano["sort_field[0]"] == "SUBASTA.FECHA_FIN"
 
     def test_se_queda_con_la_primera_estrategia_que_devuelve_algo(self, monkeypatch):
         from app.sources.boe import BoeSubastasSource
@@ -1521,7 +1530,7 @@ class TestSubastasBoe:
         intentos = source.search_attempts("Cantabria")
         nombres = [n for n, _, _ in intentos]
         assert nombres[0] == "sesion-inicial"   # primero se abre la sesión
-        assert len(intentos) == 5               # y después todas las estrategias
+        assert len(intentos) >= 4               # y después todas las estrategias
         for nombre, ids, info in intentos[1:]:
             assert ids == []
             assert info["http_status"] == 200
@@ -1725,23 +1734,26 @@ class TestFormularioDelBoe:
     """Los parámetros del portal no están documentados: se leen del HTML."""
 
     def test_saca_los_codigos_que_admite_cada_campo(self):
-        from app.sources.boe import _FormParser
+        from app.sources.boe import parse_form
 
-        parser = _FormParser()
-        parser.feed(
-            '<form><select name="dato[2]">'
+        formulario = parse_form(
+            '<form action="subastas_ava.php" method="get">'
+            '<select name="dato[8]">'
             '<option value="">Todas</option>'
-            '<option value="39">CANTABRIA</option>'
-            '<option value="45">TOLEDO</option>'
+            '<option value="39">Cantabria</option>'
+            '<option value="45">Toledo</option>'
             "</select>"
-            '<input type="hidden" name="accion" value="Buscar">'
-            '<input type="submit" name="enviar"></form>'
+            '<input type="hidden" name="campo[8]" value="BIEN.PROVINCIA">'
+            '<input type="submit" name="accion" value="Buscar"></form>'
         )
-        assert [o["value"] for o in parser.fields["dato[2]"]] == ["", "39", "45"]
-        assert parser.fields["dato[2]"][1]["label"] == "CANTABRIA"
-        assert "accion" in parser.fields
-        # El botón de enviar no es un parámetro de búsqueda.
-        assert "enviar" not in parser.fields
+        campo = formulario["fields"]["dato[8]"]
+        assert [o["value"] for o in campo["options"]] == ["", "39", "45"]
+        assert campo["options"][1]["label"] == "Cantabria"
+        # El valor de los campos ocultos importa: es lo que empareja cada
+        # dato[N] con el campo al que se refiere.
+        assert formulario["fields"]["campo[8]"]["value"] == "BIEN.PROVINCIA"
+        assert formulario["submits"] == {"accion": "Buscar"}
+        assert formulario["action"] == "subastas_ava.php"
 
 
 class TestSesionDelBoe:
@@ -1762,7 +1774,7 @@ class TestSesionDelBoe:
 
         monkeypatch.setattr(httpx.Client, "request", fake)
         BoeSubastasSource().search_attempts("Cantabria")
-        assert len(clientes) == 5
+        assert len(clientes) >= 4
         assert len(set(clientes)) == 1      # una sola sesión para todo
 
     def test_se_carga_el_formulario_antes_de_buscar(self, monkeypatch):
@@ -1804,3 +1816,122 @@ class TestSesionDelBoe:
         # La primera va sin cookie; a partir de ahí la lleva.
         assert enviadas[0] == ""
         assert all(c == "abc123" for c in enviadas[1:])
+
+
+class TestReplicaDelFormularioDelBoe:
+    """Adivinar los parámetros fue lo que hizo devolver cero durante días.
+
+    El formulario de aquí es el real del portal, recortado: mismos nombres de
+    campo y mismos códigos que devolvió el diagnóstico en producción.
+    """
+
+    FORMULARIO = (
+        '<form action="subastas_ava.php" method="get">'
+        '<input type="hidden" name="campo[0]" value="SUBASTA.ESTADO">'
+        '<select name="dato[0]"><option value="EJ" selected>Celebrándose</option>'
+        '<option value="PU">Publicada</option></select>'
+        '<input type="hidden" name="campo[8]" value="BIEN.PROVINCIA">'
+        '<select name="dato[8]">'
+        '<option value="">-- Todas --</option>'
+        '<option value="08">Barcelona</option>'
+        '<option value="28">Madrid</option>'
+        '<option value="39">Cantabria</option>'
+        '<option value="46">Valencia/València</option>'
+        "</select>"
+        '<select name="page_hits"><option value="50">50</option>'
+        '<option value="100">100</option><option value="500">500</option></select>'
+        '<select name="sort_field[0]">'
+        '<option value="SUBASTA.FECHA_FIN">Fecha fin subasta</option>'
+        '<option value="SUBASTA.ESTADO.CODIGO">Estado</option></select>'
+        '<select name="sort_order[0]"><option value="desc">descendente</option>'
+        '<option value="asc">ascendente</option></select>'
+        '<input type="submit" name="accion" value="Buscar">'
+        "</form>"
+    )
+
+    def _form(self):
+        from app.sources.boe import parse_form
+
+        return parse_form(self.FORMULARIO)
+
+    def test_la_provincia_se_reconoce_por_sus_codigos(self):
+        """Hoy está en dato[8], pero ese número es maquetación y puede cambiar."""
+        from app.sources.boe import province_slot
+
+        assert province_slot(self._form()) == "dato[8]"
+
+    def test_se_envian_los_campos_ocultos_del_formulario(self):
+        """Sin campo[8], mandar dato[8]=39 no le dice nada al portal."""
+        from app.sources.boe import search_params_from_form
+
+        params = search_params_from_form(self._form(), "39", 50)
+        assert params["campo[8]"] == "BIEN.PROVINCIA"
+        assert params["dato[8]"] == "39"
+
+    def test_se_conserva_lo_que_el_formulario_trae_marcado(self):
+        from app.sources.boe import search_params_from_form
+
+        params = search_params_from_form(self._form(), "39", 50)
+        assert params["campo[0]"] == "SUBASTA.ESTADO"
+        assert params["dato[0]"] == "EJ"        # la opción marcada por defecto
+
+    def test_un_tamano_de_pagina_no_admitido_se_sustituye(self):
+        from app.sources.boe import search_params_from_form
+
+        params = search_params_from_form(self._form(), "39", 25)
+        assert params["page_hits"] == "50"
+
+    def test_un_tamano_de_pagina_admitido_se_respeta(self):
+        from app.sources.boe import search_params_from_form
+
+        assert search_params_from_form(self._form(), "39", 100)["page_hits"] == "100"
+
+    def test_sin_provincia_no_se_manda_el_campo(self):
+        from app.sources.boe import search_params_from_form
+
+        assert "dato[8]" not in search_params_from_form(self._form(), None, 50)
+
+    def test_se_manda_el_boton_de_buscar(self):
+        """El portal distingue pintar el formulario de ejecutar la búsqueda."""
+        from app.sources.boe import search_params_from_form
+
+        assert search_params_from_form(self._form(), "39", 50)["accion"] == "Buscar"
+
+    def test_replicar_el_formulario_va_antes_que_adivinar(self, monkeypatch):
+        import httpx
+
+        from app.sources.boe import BoeSubastasSource
+
+        enviados: list[dict] = []
+
+        formulario = self.FORMULARIO
+
+        def fake(_cliente, method, url, **kw):
+            enviados.append(kw.get("params") or kw.get("data") or {})
+            # La primera petición es la que carga el formulario.
+            cuerpo = formulario if len(enviados) == 1 else "<html>nada</html>"
+            return httpx.Response(200, text=cuerpo, request=httpx.Request(method, url))
+
+        monkeypatch.setattr(httpx.Client, "request", fake)
+        intentos = BoeSubastasSource().search_attempts("Cantabria")
+        nombres = [n for n, _, _ in intentos]
+        assert nombres[1] == "formulario-get"
+        # Y la primera búsqueda real ya lleva los campos que pide el portal.
+        assert enviados[1]["campo[8]"] == "BIEN.PROVINCIA"
+        assert enviados[1]["dato[8]"] == "39"
+
+    def test_si_no_hay_formulario_se_sigue_intentando_a_mano(self, monkeypatch):
+        """Que el portal deje de servir el formulario no puede dejarnos sin nada."""
+        import httpx
+
+        from app.sources.boe import BoeSubastasSource
+
+        monkeypatch.setattr(
+            httpx.Client, "request",
+            lambda self, method, url, **kw: httpx.Response(
+                200, text="<html>sin formulario</html>",
+                request=httpx.Request(method, url),
+            ),
+        )
+        nombres = [n for n, _, _ in BoeSubastasSource().search_attempts("Cantabria")]
+        assert "a-mano-get" in nombres and "sin-filtros" in nombres
