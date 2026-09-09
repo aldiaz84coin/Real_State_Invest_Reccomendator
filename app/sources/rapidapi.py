@@ -262,6 +262,48 @@ class RapidApiSource(BaseSource):
             "raw": raw,
         }
 
+    def _explicar(
+        self, estado: SourceStatus, sobrescrito: bool, por_defecto: str
+    ) -> SourceStatus:
+        """Añade al estado el host en uso y traduce el 404, que no decía nada.
+
+        Un 404 aquí casi nunca es «no hay datos»: es que la ruta que pide el
+        conector no existe en ese host. Y eso pasa cuando el host contratado es
+        de otro revendedor, que es un error facilísimo de cometer porque los
+        nombres se parecen —fotocasa1 y fotocasa3 son empresas distintas, con
+        rutas distintas, vendiendo los datos del mismo portal—. Dejarlo en
+        «HTTP 404» obligaba a adivinar justo eso.
+        """
+        estado.extra["host"] = self.host
+        estado.extra["host_por_defecto"] = por_defecto
+        estado.extra["host_sobrescrito"] = sobrescrito
+        estado.extra["rutas"] = list(self.search_paths)
+
+        if estado.status_code == 404:
+            estado.detail = (
+                f"El host {self.host} responde, pero no reconoce las rutas que "
+                f"pide este conector ({', '.join(self.search_paths)}"
+                + (f", salud {self.health_path}" if self.health_path else "")
+                + "). En RapidAPI varios proveedores revenden el mismo portal "
+                "con rutas distintas, así que esto suele ser un host de otro "
+                "proveedor: "
+                + (
+                    f"lo tienes sobrescrito a {self.host} y el conector está "
+                    f"escrito contra {por_defecto}."
+                    if sobrescrito
+                    else f"comprueba que estás suscrito a {por_defecto} y no a "
+                    "otro parecido."
+                )
+            )
+        elif sobrescrito:
+            estado.detail = (
+                f"{estado.detail} Host en uso: {self.host} "
+                f"(sobrescrito; el conector está escrito contra {por_defecto})."
+            ).strip()
+        else:
+            estado.detail = f"{estado.detail} Host en uso: {self.host}.".strip()
+        return estado
+
     def check(self) -> SourceStatus:
         if not self.api_key:
             return self._status(
@@ -281,6 +323,14 @@ class RapidApiSource(BaseSource):
         if cached is not None:
             return cached
 
+        # El host en uso va en el estado siempre. Sin verlo no habia forma de
+        # notar que el conector estaba llamando a otro proveedor distinto del
+        # que uno tiene contratado: son nombres casi iguales -fotocasa1 y
+        # fotocasa3, idealista17 y idealista-api1- y cada uno es de una empresa
+        # con sus propias rutas.
+        por_defecto = type(self).host
+        sobrescrito = self.host != por_defecto
+
         # Si el proveedor ofrece un endpoint de salud, se usa ese: comprobar
         # con una busqueda real gastaria cuota del plan gratuito en cada carga
         # del panel.
@@ -294,6 +344,7 @@ class RapidApiSource(BaseSource):
                     "anuncios se verifica en /api/sources/rapidapi/probe, que sí "
                     "consume una petición."
                 )
+            self._explicar(status, sobrescrito, por_defecto)
             _store_status(self.key, status)
             return status
 
@@ -314,10 +365,13 @@ class RapidApiSource(BaseSource):
             message = str(exc)
             latency = int((time.perf_counter() - started) * 1000)
             if "rechazada" in message:
-                return _store_status(self.key, self._status("needs_credentials", message, 401, latency))
-            if "cuota" in message:
-                return _store_status(self.key, self._status("error", message, 429, latency))
-            return _store_status(self.key, self._status("error", message, latency_ms=latency))
+                estado = self._status("needs_credentials", message, 401, latency)
+            elif "cuota" in message:
+                estado = self._status("error", message, 429, latency)
+            else:
+                estado = self._status("error", message, latency_ms=latency)
+            self._explicar(estado, sobrescrito, por_defecto)
+            return _store_status(self.key, estado)
         except httpx.HTTPError as exc:
             return self._status("error", f"{type(exc).__name__}: {exc}")
 
