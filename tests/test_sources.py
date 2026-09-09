@@ -458,9 +458,11 @@ class TestIdealista17:
         return RapidApiIdealista17Source()
 
     def test_usa_las_rutas_reales_de_su_documentacion(self):
+        """La de coordenadas encaja mejor con esta app, pero el plan BASIC la
+        excluye, así que va detrás de la que sí responde."""
         paths = self._source().search_paths
-        assert paths[0] == "/property-search-by-coordinates"
-        assert "/property-search" in paths
+        assert paths[0] == "/property-search"
+        assert "/property-search-by-coordinates" in paths
 
     def test_localiza_los_anuncios_del_ejemplo_documentado(self):
         from app.sources.rapidapi import extract_listings
@@ -505,13 +507,22 @@ class TestIdealista17:
         assert source.discard_reason({"price": 10, "size": 10}) == "sin identificador"
 
     def test_los_parametros_de_busqueda_son_de_terrenos_en_venta(self):
+        """En snake_case, que es como los nombra este revendedor.
+
+        En camelCase -como la API oficial de Idealista- contestaba HTTP 400,
+        «Invalid or missing parameters», y se leía como si la ruta estuviera
+        mal cuando lo que estaba mal eran los nombres.
+        """
         params = self._source().build_params(36.72, -4.42, 15.0, page=2, max_price=90000)
-        assert params["operation"] == "sale"
-        assert params["propertyType"] == "lands"
+        assert params["search_type"] == "for_sale"
+        assert params["property_type"] == "lands"
         assert params["country"] == "es"
         assert params["radius"] == 15000
         assert params["page"] == 2
-        assert params["maxPrice"] == 90000
+        assert params["max_price"] == 90000
+        # Los de la API oficial no valen aquí y no deben colarse.
+        assert "propertyType" not in params
+        assert "operation" not in params
 
     def test_clave_propia_por_fuente(self, monkeypatch):
         """RapidAPI da una clave por aplicación y suele haber una por API."""
@@ -563,7 +574,9 @@ class TestIdealista17:
 
             def fake(self, method, url, **kw):
                 vistos.append(url)
-                code = 404 if "by-coordinates" in url else 200
+                # La primera ruta no existe; debe seguir con la siguiente.
+                ruta = str(url).split("?")[0]
+                code = 404 if ruta.endswith("/property-search") else 200
                 return httpx.Response(
                     code, json=TestIdealista17.EJEMPLO_DOC if code == 200 else {},
                     request=httpx.Request(method, url),
@@ -571,7 +584,7 @@ class TestIdealista17:
 
             monkeypatch.setattr(httpx.Client, "request", fake)
             path, payload = source.fetch_page({})
-            assert path == "/property-search"
+            assert path == "/property-search-by-zip"
             assert len(vistos) == 2  # probó la primera y pasó a la segunda
         finally:
             get_settings.cache_clear()
@@ -2730,3 +2743,100 @@ class TestMunicipioPequeno:
         from app.discovery import resolve_missing_coords
 
         assert resolve_missing_coords(db_session, {"municipality_name": ""}) is None
+
+
+class TestPeticionCrudaARapidApi:
+    """El mecanismo para acertar con los parámetros sin redesplegar.
+
+    Estos revendedores no documentan sus parámetros de forma fiable y cada uno
+    usa los suyos: uno espera `propertyType` y el de al lado `property_type`.
+    La diferencia entre acertar y no acertar es un HTTP 400 sin explicación, y
+    probar a ciegas tocando código y redesplegando cuesta una tarde.
+    """
+
+    def _cliente(self, monkeypatch, responder):
+        """TestClient es a su vez un cliente httpx, así que parchear
+        httpx.Client interceptaría la llamada a la propia aplicación y el test
+        no probaría nada. Se sustituye el método de la fuente."""
+        from fastapi.testclient import TestClient
+
+        from app.config import get_settings
+        from app.main import app
+        from app.sources.rapidapi import RapidApiSource
+
+        monkeypatch.setenv("RAPIDAPI_KEY", "clave-de-prueba-1234")
+        get_settings.cache_clear()
+        monkeypatch.setattr(RapidApiSource, "request", responder)
+        return TestClient(app)
+
+    def test_reenvia_los_parametros_sueltos_de_la_url(self, monkeypatch):
+        import httpx
+
+        enviado: dict = {}
+
+        def responder(self, method, url, **kw):
+            enviado["params"] = kw.get("params")
+            enviado["url"] = str(url)
+            return httpx.Response(200, json={"success": True},
+                                  request=httpx.Request(method, url))
+
+
+        cliente = self._cliente(monkeypatch, responder)
+        respuesta = cliente.get(
+            "/api/sources/rapidapi/raw",
+            params={"source": "rapidapi_idealista17", "path": "/property-search",
+                    "country": "es", "property_type": "lands"},
+        )
+        assert respuesta.status_code == 200
+        # source y path son de la herramienta; el resto va al proveedor.
+        assert enviado["params"] == {"country": "es", "property_type": "lands"}
+        assert enviado["url"].endswith("/property-search")
+
+    def test_devuelve_el_cuerpo_para_poder_leer_el_error(self, monkeypatch):
+        """Un HTTP 400 sin cuerpo no dice qué parámetro sobra o falta."""
+        import httpx
+
+        def responder(self, method, url, **kw):
+            return httpx.Response(
+                400, json={"error": "invalid_params", "message": "location required"},
+                request=httpx.Request(method, url))
+
+        cliente = self._cliente(monkeypatch, responder)
+        datos = cliente.get(
+            "/api/sources/rapidapi/raw",
+            params={"source": "rapidapi_idealista17", "path": "/property-search"},
+        ).json()
+        assert datos["http_status"] == 400
+        assert datos["body"]["message"] == "location required"
+        assert datos["top_level_keys"] == ["error", "message"]
+
+    def test_no_deja_elegir_el_host_ni_devuelve_la_clave(self, monkeypatch):
+        """Si no, sería un puente hacia cualquier sitio con la clave de casa."""
+        import httpx
+
+        def responder(self, method, url, **kw):
+            return httpx.Response(200, json={}, request=httpx.Request(method, url))
+
+        cliente = self._cliente(monkeypatch, responder)
+        datos = cliente.get(
+            "/api/sources/rapidapi/raw",
+            params={"source": "rapidapi_idealista17", "path": "/x",
+                    "host": "evil.example.com"},
+        ).json()
+        assert datos["host"] == "idealista17.p.rapidapi.com"
+        assert "clave-de-prueba-1234" not in str(datos)
+        assert datos["key_fingerprint"] == "clave-…1234 (20 caracteres)"
+
+    def test_una_fuente_que_no_existe_se_dice(self, monkeypatch):
+        import httpx
+
+        def responder(self, method, url, **kw):
+            return httpx.Response(200, json={}, request=httpx.Request(method, url))
+
+        cliente = self._cliente(monkeypatch, responder)
+        respuesta = cliente.get(
+            "/api/sources/rapidapi/raw",
+            params={"source": "no_existe", "path": "/x"},
+        )
+        assert respuesta.status_code == 404
+        assert "rapidapi_idealista17" in respuesta.json()["detail"]

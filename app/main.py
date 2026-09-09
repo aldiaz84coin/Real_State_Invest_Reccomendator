@@ -802,6 +802,86 @@ def api_probe_rapidapi(
     return diagnosis
 
 
+@app.get("/api/sources/rapidapi/raw", tags=["fuentes"])
+def api_rapidapi_raw(
+    request: Request,
+    source: str = Query(..., description="Clave de la fuente, p. ej. rapidapi_idealista17"),
+    path: str = Query(..., description="Ruta del proveedor, p. ej. /property-search"),
+    max_bytes: int = Query(4000, ge=200, le=40000),
+) -> dict[str, Any]:
+    """Lanza una petición cruda a RapidAPI y devuelve lo que conteste, tal cual.
+
+    Existe porque estos revendedores no documentan sus parámetros de forma
+    fiable y cada uno usa los suyos: uno espera `propertyType` y el de al lado
+    `property_type`, y la diferencia entre acertar y no acertar es un HTTP 400
+    sin más explicación. Probar a ciegas cambiando el código y redesplegando es
+    carísimo en tiempo; así se prueba una combinación por petición.
+
+    **Cualquier parámetro extra de la URL se reenvía al proveedor.** Por ejemplo:
+
+        /api/sources/rapidapi/raw?source=rapidapi_idealista17
+            &path=/property-search
+            &country=es&language=es&property_type=lands&search_type=for_sale
+
+    El host y la clave no se pueden elegir: salen de la fuente ya configurada,
+    para que esto no sirva de puente hacia cualquier sitio con la clave de la
+    casa. La clave nunca se devuelve: sólo su huella.
+    """
+    provider = next((p for p in iter_rapidapi_sources() if p.key == source), None)
+    if provider is None:
+        raise HTTPException(
+            404,
+            "Fuente desconocida. Las que hay: "
+            + ", ".join(p.key for p in iter_rapidapi_sources()),
+        )
+    if not provider.api_key:
+        raise HTTPException(422, f"{provider.name} no tiene clave configurada.")
+    if not path.startswith("/"):
+        path = "/" + path
+
+    reservados = {"source", "path", "max_bytes"}
+    params = {k: v for k, v in request.query_params.items() if k not in reservados}
+
+    import time as _time
+
+    empezado = _time.perf_counter()
+    try:
+        response = provider.request(
+            "GET", f"{provider.base_url()}{path}",
+            headers=provider.headers(), params=params,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"{type(exc).__name__}: {exc}") from None
+    tardanza = int((_time.perf_counter() - empezado) * 1000)
+
+    cuerpo: Any = response.text[:max_bytes]
+    claves: list[str] = []
+    try:
+        parseado = response.json()
+        cuerpo = parseado
+        if isinstance(parseado, dict):
+            claves = sorted(parseado)[:40]
+        # El cuerpo entero puede ser enorme; el panel sólo necesita la forma.
+        recortado = json.dumps(parseado, ensure_ascii=False)[:max_bytes]
+        if len(recortado) >= max_bytes:
+            cuerpo = recortado + " …(recortado)"
+    except ValueError:
+        pass
+
+    return {
+        "source": provider.key,
+        "host": provider.host,
+        "url": f"{provider.base_url()}{path}",
+        "params_enviados": params,
+        "key_fingerprint": provider.key_fingerprint(provider.api_key),
+        "http_status": response.status_code,
+        "latency_ms": tardanza,
+        "content_type": response.headers.get("content-type", ""),
+        "top_level_keys": claves,
+        "body": cuerpo,
+    }
+
+
 @app.get("/api/sources/rapidapi/suggestions", tags=["fuentes"])
 def api_probe_suggestions(
     query: str = Query(..., description="Municipio o zona a resolver"),
