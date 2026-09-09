@@ -606,7 +606,41 @@ class TestConsolaDeRapidApi:
         permite aislar el parámetro que falla."""
         texto = self._pagina(client).text
         assert "idealista17 · coordenadas" in texto
-        assert "fotocasa · sin filtros de precio" in texto
+        # Los de Fotocasa van numerados: busca por zona, así que hay que sacar
+        # su identificador antes de poder buscar.
+        assert "fotocasa · 1. sacar la zona" in texto
+        assert "fotocasa · 2. buscar (como lo manda la app)" in texto
 
     def test_el_panel_de_fuentes_enlaza_la_consola(self, client):
         assert '/fuentes/rapidapi' in client.get("/fuentes").text
+
+
+class TestAtajosQueReproducenAlConector:
+    """Un atajo con menos parámetros que la app falla por otra razón.
+
+    Pasó: el atajo de Fotocasa omitía `combinedLocations` y `sortType`, así que
+    el proveedor se quejaba de eso y no de lo que de verdad rechaza cuando la
+    app le habla. Un atajo que no reproduce la llamada real no depura nada.
+    """
+
+    def _presets(self, client):
+        import re, json
+
+        texto = client.get("/fuentes/rapidapi").text
+        crudo = re.search(r"const PRESETS = (\{.*?\});", texto, re.DOTALL)
+        return json.loads(crudo.group(1))
+
+    def test_el_atajo_de_fotocasa_manda_lo_mismo_que_el_conector(self, client):
+        from app.sources.rapidapi import RapidApiFotocasaSource
+
+        preset = self._presets(client)["fotocasa · 2. buscar (como lo manda la app)"]
+        del_conector = set(RapidApiFotocasaSource().build_params(43.46, -3.81, 10.0))
+        del_conector.add("combinedLocations")   # lo añade el paso previo
+        assert del_conector <= set(preset["params"])
+
+    def test_el_primer_paso_pide_la_zona(self, client):
+        from app.sources.rapidapi import RapidApiFotocasaSource
+
+        preset = self._presets(client)["fotocasa · 1. sacar la zona"]
+        assert preset["path"] == RapidApiFotocasaSource.suggestions_path
+        assert "query" in preset["params"]

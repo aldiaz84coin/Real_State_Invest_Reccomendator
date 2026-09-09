@@ -50,6 +50,12 @@
       <textarea id="params" rows="9"></textarea>
     </label>
     <p class="note">
+      Los atajos numerados van en orden: el proveedor de Fotocasa busca por
+      zona, así que primero se saca su identificador y luego se busca con él.
+      Un atajo con menos parámetros de los que manda la app falla por otra
+      razón y no enseña nada.
+    </p>
+    <p class="note">
       Atajos:
       {% for nombre, preset in presets.items() %}
       <button type="button" class="secondary" onclick='rellenar({{ preset | tojson }})'>{{ nombre }}</button>

@@ -1507,13 +1507,27 @@ def page_debug_rapidapi(request: Request) -> HTMLResponse:
                        "search_type": "for_sale", "property_type": "homes",
                        "search_text": "Santander"},
         },
-        "fotocasa · sin filtros de precio": {
+        # Este proveedor busca por zona, no por punto: /searchads exige un
+        # combinedLocations que hay que pedir antes. Por eso van dos atajos, en
+        # el orden en que se usan.
+        "fotocasa · 1. sacar la zona": {
+            "source": "rapidapi_fotocasa",
+            "path": "/suggestions",
+            "params": {"query": "Santander"},
+        },
+        "fotocasa · 2. buscar (como lo manda la app)": {
             "source": "rapidapi_fotocasa",
             "path": "/searchads",
+            # Exactamente los parametros del conector. Reproducir su llamada es
+            # lo que permite ir quitando uno y ver cual es el que sobra: un
+            # atajo con menos parametros falla por otra razon y no dice nada.
             "params": {
-                "propertyType": "LAND", "transactionType": "BUY",
+                "combinedLocations": "PEGA-AQUI-EL-DEL-PASO-1",
                 "latitude": "43.4623", "longitude": "-3.8100",
                 "pageNumber": "1", "size": "30",
+                "transactionType": "BUY", "propertyType": "LAND",
+                "publicationDate": "INDIFFERENT",
+                "sortType": "PRICE_PER_AREA", "sortOrderDesc": "false",
             },
         },
     }
