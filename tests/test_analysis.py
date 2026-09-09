@@ -297,3 +297,21 @@ class TestElGuardaDeRed:
 
         with _pytest.raises(SalidaDeRedProhibida):
             httpx.Client(timeout=1).get("https://subastas.boe.es/")
+
+
+class TestProvinciasContraElPortal:
+    """El BOE filtra por código: si la tabla no coincide, la búsqueda es otra."""
+
+    # Copiado literal del formulario del portal, leído en producción.
+    DEL_PORTAL = {
+        "01": "Araba/Álava", "07": "Illes Balears", "12": "Castellón/Castelló",
+        "15": "A Coruña", "20": "Gipuzkoa", "26": "La Rioja", "33": "Asturias",
+        "38": "Santa Cruz de Tenerife", "39": "Cantabria", "45": "Toledo",
+        "46": "Valencia/València", "48": "Bizkaia", "52": "Melilla",
+    }
+
+    def test_los_codigos_y_los_nombres_son_los_mismos(self):
+        from app.provinces import PROVINCES
+
+        for codigo, nombre in self.DEL_PORTAL.items():
+            assert PROVINCES[codigo] == nombre

@@ -126,42 +126,37 @@ class BoeSubastasSource(BaseSource):
         return "https://subastas.boe.es"
 
     def search_strategies(
-        self, province: str | None, max_results: int
+        self, province: str | None, max_results: int, form: dict[str, Any] | None = None
     ) -> list[tuple[str, str, str, dict[str, Any]]]:
         """Metodo, ruta y parametros a probar, del mas especifico al mas simple.
 
-        La forma exacta de la busqueda de este portal no esta documentada, y lo
-        que devuelve no ayuda: contesta HTTP 200 tanto si encuentra como si no.
-        Se prueban varias combinaciones y se usa la primera que devuelva
-        subastas; la ultima va sin filtros y sirve para saber si el portal
-        responde siquiera.
+        Cuando se ha podido leer el formulario, la primera estrategia es
+        replicarlo: se manda lo mismo que mandaria el navegador. Detras van las
+        combinaciones escritas a mano, que se conservan por si el portal deja
+        de servir el formulario.
         """
         code = self.province_code(province)
         estrategias: list[tuple[str, str, str, dict[str, Any]]] = []
 
-        base: dict[str, Any] = {
+        if form:
+            del_formulario = search_params_from_form(form, code, max_results)
+            if del_formulario:
+                estrategias.append(("formulario-get", "GET", SEARCH_PATH, del_formulario))
+                estrategias.append(("formulario-post", "POST", SEARCH_PATH, del_formulario))
+
+        # Los nombres de campo salen del formulario real: la provincia va en
+        # dato[8], no en dato[2] como se venia mandando.
+        a_mano: dict[str, Any] = {
             "accion": "Buscar",
-            "campo[0]": "SUBASTA.ESTADO",
-            "dato[0]": "EJ",
-            "campo[1]": "BIEN.TIPO",
-            "dato[1]": "I",
-            "sort_field[0]": "SUBASTA.FECHA_FIN_YMD",
+            "page_hits": 50,
+            "sort_field[0]": "SUBASTA.FECHA_FIN",
             "sort_order[0]": "desc",
-            "page_hits": min(max_results, 50),
         }
         if code:
-            base["campo[2]"] = "BIEN.PROVINCIA"
-            base["dato[2]"] = code
+            a_mano["dato[8]"] = code
+        estrategias.append(("a-mano-get", "GET", SEARCH_PATH, dict(a_mano)))
+        estrategias.append(("a-mano-post", "POST", SEARCH_PATH, dict(a_mano)))
 
-        estrategias.append(("get-filtrada", "GET", SEARCH_PATH, dict(base)))
-        # El formulario del portal es un POST; que acepte GET no esta dicho en
-        # ninguna parte, asi que se prueba tal y como lo envia el navegador.
-        estrategias.append(("post-filtrada", "POST", SEARCH_PATH, dict(base)))
-        estrategias.append(
-            ("get-solo-provincia", "GET", SEARCH_PATH,
-             {"accion": "Buscar", "page_hits": 50,
-              **({"campo[0]": "BIEN.PROVINCIA", "dato[0]": code} if code else {})})
-        )
         # Sin ningun filtro: si aqui salen subastas, el problema son los
         # parametros; si no sale ninguna, es el acceso o el parseo.
         estrategias.append(("sin-filtros", "GET", SEARCH_PATH, {}))
@@ -186,11 +181,12 @@ class BoeSubastasSource(BaseSource):
         """Cada estrategia probada con lo que devolvio. Lo usa el diagnostico.
 
         Todo ocurre dentro de una misma sesion HTTP, y se empieza por cargar el
-        formulario: el portal entrega ahi su cookie y la exige despues. Con un
-        cliente nuevo por peticion, la busqueda llegaba sin sesion y contestaba
-        con una pagina corta y vacia.
+        formulario: el portal entrega ahi su cookie y la exige despues, y de esa
+        misma respuesta se saca que parametros admite. Con un cliente nuevo por
+        peticion, la busqueda llegaba sin sesion y con los campos inventados.
         """
         resultados: list[tuple[str, list[str], dict[str, Any]]] = []
+        formulario: dict[str, Any] | None = None
 
         with self.session() as client:
             calentamiento: dict[str, Any] = {}
@@ -198,16 +194,20 @@ class BoeSubastasSource(BaseSource):
                 inicial = self.request(
                     "GET", f"{self.base_url}/{SEARCH_PATH}", client=client
                 )
+                formulario = parse_form(inicial.text)
                 calentamiento = {
                     "http_status": inicial.status_code,
                     "bytes": len(inicial.text),
                     "cookies": sorted(client.cookies.keys()),
+                    "form_fields": len(formulario.get("fields") or {}),
+                    "province_slot": province_slot(formulario),
                 }
             except SourceError as exc:
                 calentamiento = {"error": str(exc)[:200]}
             resultados.append(("sesion-inicial", [], calentamiento))
 
-            for nombre, metodo, ruta, params in self.search_strategies(province, max_results):
+            estrategias = self.search_strategies(province, max_results, formulario)
+            for nombre, metodo, ruta, params in estrategias:
                 info: dict[str, Any] = {
                     "method": metodo,
                     "path": ruta,
@@ -242,7 +242,7 @@ class BoeSubastasSource(BaseSource):
 
         return resultados
 
-    def form_fields(self, path: str = SEARCH_PATH) -> dict[str, list[dict[str, str]]]:
+    def form_fields(self, path: str = SEARCH_PATH) -> dict[str, Any]:
         """Campos y valores que admite el formulario de busqueda del portal.
 
         Existe porque los parametros de este portal no estan documentados en
@@ -252,9 +252,7 @@ class BoeSubastasSource(BaseSource):
         response = self.request("GET", f"{self.base_url}/{path}")
         if response.status_code != 200:
             raise SourceError(f"BOE HTTP {response.status_code} en {path}")
-        parser = _FormParser()
-        parser.feed(response.text)
-        return parser.fields
+        return parse_form(response.text)
 
     @staticmethod
     def province_code(province: str | None) -> str | None:
@@ -359,29 +357,49 @@ class BoeSubastasSource(BaseSource):
 
 
 class _FormParser(HTMLParser):
-    """Saca los select y sus opciones del formulario de busqueda.
+    """Lee el formulario de busqueda: campos, valores por defecto y opciones.
 
-    Es la forma de saber que parametros admite el portal sin documentacion:
-    los nombres de campo y los codigos de provincia salen del propio HTML.
+    Es la forma de saber que admite este portal sin documentacion, que no la
+    hay. Guarda tambien el valor de cada campo oculto, porque son los que
+    emparejan cada `dato[N]` con el `campo[N]` que dice a que se refiere: sin
+    ellos, mandar `dato[8]=39` no significa nada.
     """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.fields: dict[str, list[dict[str, str]]] = {}
+        self.fields: dict[str, dict[str, Any]] = {}
+        self.submits: dict[str, str] = {}
+        self.action: str = ""
+        self.method: str = ""
         self._current: str | None = None
         self._option: dict[str, str] | None = None
 
+    def _campo(self, nombre: str) -> dict[str, Any]:
+        return self.fields.setdefault(nombre, {"value": "", "options": []})
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         atributos = {k: (v or "") for k, v in attrs}
-        if tag == "select":
+        if tag == "form":
+            self.action = atributos.get("action", "")
+            self.method = (atributos.get("method") or "get").lower()
+        elif tag == "select":
             self._current = atributos.get("name") or atributos.get("id") or ""
-            self.fields.setdefault(self._current, [])
+            self._campo(self._current)
         elif tag == "option" and self._current is not None:
             self._option = {"value": atributos.get("value", ""), "label": ""}
+            if "selected" in atributos:
+                self._campo(self._current)["value"] = atributos.get("value", "")
         elif tag == "input":
             nombre = atributos.get("name")
-            if nombre and atributos.get("type") not in ("submit", "button", "image"):
-                self.fields.setdefault(nombre, [])
+            if not nombre:
+                return
+            if atributos.get("type") in ("submit", "button", "image"):
+                self.submits[nombre] = atributos.get("value", "")
+                return
+            if atributos.get("type") in ("checkbox", "radio") and "checked" not in atributos:
+                self._campo(nombre)
+                return
+            self._campo(nombre)["value"] = atributos.get("value", "")
 
     def handle_data(self, data: str) -> None:
         if self._option is not None:
@@ -389,10 +407,96 @@ class _FormParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "option" and self._option is not None and self._current is not None:
-            self.fields[self._current].append(self._option)
+            self._campo(self._current)["options"].append(self._option)
             self._option = None
         elif tag == "select":
             self._current = None
+
+
+def parse_form(html: str) -> dict[str, Any]:
+    """Formulario del portal en forma utilizable."""
+    parser = _FormParser()
+    parser.feed(html)
+    return {
+        "fields": parser.fields,
+        "submits": parser.submits,
+        "action": parser.action,
+        "method": parser.method,
+    }
+
+
+def province_slot(form: dict[str, Any]) -> str | None:
+    """Nombre del campo cuyo desplegable son las provincias.
+
+    Se busca por contenido y no por posicion: el portal lo tiene hoy en
+    `dato[8]`, pero ese numero es un detalle de maquetacion que puede cambiar
+    con cualquier retoque del formulario. Se reconoce porque sus opciones son
+    los codigos del INE, que si son estables.
+    """
+    muestra = {"39", "28", "08", "46"}
+    for nombre, info in form.get("fields", {}).items():
+        valores = {o.get("value", "") for o in info.get("options", [])}
+        if muestra <= valores:
+            return nombre
+    return None
+
+
+def search_params_from_form(
+    form: dict[str, Any], province_code: str | None, max_results: int
+) -> dict[str, Any] | None:
+    """Parametros de busqueda construidos a partir del propio formulario.
+
+    Es la unica forma fiable de acertar aqui: se envia lo mismo que enviaria el
+    navegador -incluidos los campos ocultos que emparejan cada dato con su
+    campo- y solo se cambia la provincia, el tamano de pagina y el orden.
+    Adivinar los nombres a mano fue lo que hizo que la busqueda devolviera
+    siempre cero.
+    """
+    campos = form.get("fields") or {}
+    if not campos:
+        return None
+
+    params: dict[str, Any] = {
+        nombre: info.get("value", "")
+        for nombre, info in campos.items()
+        if info.get("value")
+    }
+
+    slot = province_slot(form)
+    if province_code:
+        if slot is None:
+            return None
+        params[slot] = province_code
+    elif slot is not None:
+        params.pop(slot, None)
+
+    # page_hits y sort_field solo admiten los valores de su desplegable: los
+    # que mandaba antes -25 y SUBASTA.FECHA_FIN_YMD- no estan en la lista.
+    params.update(_opcion_valida(campos, "page_hits", str(max_results), "50"))
+    params.update(_opcion_valida(campos, "sort_field[0]", None, "SUBASTA.FECHA_FIN"))
+    params.update(_opcion_valida(campos, "sort_order[0]", None, "desc"))
+
+    for nombre, valor in (form.get("submits") or {}).items():
+        params.setdefault(nombre, valor)
+    params.setdefault("accion", "Buscar")
+    return params
+
+
+def _opcion_valida(
+    campos: dict[str, Any], nombre: str, preferido: str | None, respaldo: str
+) -> dict[str, str]:
+    """Elige un valor que el desplegable admita de verdad."""
+    info = campos.get(nombre)
+    if info is None:
+        return {}
+    permitidos = [o.get("value", "") for o in info.get("options", []) if o.get("value")]
+    if not permitidos:
+        return {nombre: preferido or respaldo}
+    if preferido and preferido in permitidos:
+        return {nombre: preferido}
+    if respaldo in permitidos:
+        return {nombre: respaldo}
+    return {nombre: permitidos[0]}
 
 
 def _count_patterns(html: str) -> dict[str, int]:

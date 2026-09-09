@@ -1012,10 +1012,22 @@ def api_probe_boe(
             # Los parametros de este portal no estan documentados: en lugar de
             # seguir probando combinaciones, se lee el formulario y se ve que
             # nombres y que codigos admite de verdad.
-            campos = source.form_fields()
+            formulario = source.form_fields()
+            campos = formulario.get("fields", {})
+            from app.sources.boe import province_slot, search_params_from_form
+
             return {
+                "action": formulario.get("action"),
+                "method": formulario.get("method"),
+                "submits": formulario.get("submits"),
+                "province_slot": province_slot(formulario),
+                # Los parametros que se enviarian de verdad: es lo que hay que
+                # mirar cuando la busqueda no devuelve nada.
+                "params_for_cantabria": search_params_from_form(formulario, "39", 50),
                 "fields": {
-                    nombre: opciones[:60] for nombre, opciones in campos.items()
+                    nombre: {"value": info.get("value", ""),
+                             "options": info.get("options", [])[:60]}
+                    for nombre, info in campos.items()
                 },
                 "field_names": sorted(campos),
             }
